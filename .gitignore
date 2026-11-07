@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+.previs_*/
+.import_test_*/
+.reload_test_*/
+*.blend1
+
+projects/
+.runtime/
+.web_backend_*/
+node_modules/
+
+# 本机素材和导出文件，不纳入产品源码
+model/
+场景/
+动作/
+行走动作预览/
+dist/
