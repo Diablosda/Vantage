@@ -18,14 +18,14 @@ class PREVIS_OT_workspace(SafeOperator,bpy.types.Operator):
     def run(self,context):
         if bpy.app.background: return
         context.scene.previs.enabled = True
-        if context.workspace.name != 'AI Previs Studio':
-            existing = bpy.data.workspaces.get('AI Previs Studio')
+        if context.workspace.name != 'Vantage':
+            existing = bpy.data.workspaces.get('Vantage')
             if existing: context.window.workspace = existing
             else:
                 bpy.ops.workspace.duplicate()
                 # Workspace duplication switches the window on the next UI cycle.
                 def finish_workspace():
-                    bpy.context.window.workspace.name = 'AI Previs Studio'
+                    bpy.context.window.workspace.name = 'Vantage'
                     bpy.ops.previs.workspace()
                     return None
                 bpy.app.timers.register(finish_workspace,first_interval=.15)
@@ -306,7 +306,7 @@ class PrevisPanel:
     def poll(cls,context):return True
 
 class PREVIS_PT_project(PrevisPanel,bpy.types.Panel):
-    bl_idname='PREVIS_PT_project';bl_label='AI Previs Studio · 01 工程'
+    bl_idname='PREVIS_PT_project';bl_label='Vantage · 01 工程'
     def draw(self,context):
         l=self.layout;s=context.scene;p=s.previs
         row=l.row(align=True);row.operator('previs.new',text='新建');row.operator('previs.import_scene',text='导入静态场景')

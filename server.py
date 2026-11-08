@@ -24,7 +24,7 @@ from backend.portable import create_bundle, read_bundle, MAX_ARCHIVE
 ROOT=Path(__file__).resolve().parent
 WEB=ROOT/'web';PROJECTS=ROOT/'projects';RUNTIME=ROOT/'.runtime'
 BLENDER=Path(os.environ.get('PREVIS_BLENDER',str(ROOT.parent/'blender'/'blender-5.2.2-windows-x64'/'blender.exe')))
-TOKEN=secrets.token_urlsafe(32);JOBS={};GATE=threading.Semaphore(1);APP_VERSION='2.0.4'
+TOKEN=secrets.token_urlsafe(32);JOBS={};GATE=threading.Semaphore(1);APP_VERSION='2.0.6'
 MAX_BODY=128*1024**2
 
 def run_job(job,payload,source=None):
@@ -270,7 +270,7 @@ def main():
     if server is None:server=ThreadingHTTPServer(('127.0.0.1',port),Handler)
     url=f'http://127.0.0.1:{port}'+(f'/?legacyPort={legacy_port}' if legacy_port is not None else '')
     if args.open:threading.Timer(.5,lambda:webbrowser.open(url)).start()
-    print('AI Previs Studio: '+url,flush=True)
+    print('Vantage: '+url,flush=True)
     try:server.serve_forever()
     except KeyboardInterrupt:pass
     finally:

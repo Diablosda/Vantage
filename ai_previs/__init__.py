@@ -1,6 +1,6 @@
 bl_info = {
-    'name': 'AI Previs Studio',
-    'author': 'Camera Control',
+    'name': 'Vantage',
+    'author': 'Vantage',
     'version': (0,1,0),
     'blender': (5,2,2),
     'location': '3D View > Sidebar > 预演',

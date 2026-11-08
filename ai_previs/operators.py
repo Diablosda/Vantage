@@ -58,7 +58,7 @@ def add_node(context,obj,position,time=None):
     runtime.evaluate(context.scene)
 
 def new_project(context):
-    scene = bpy.data.scenes.new('AI Previs')
+    scene = bpy.data.scenes.new('Vantage')
     context.window.scene = scene
     scene.world = bpy.data.worlds.new('Previs World')
     scene.unit_settings.system = 'METRIC'; scene.unit_settings.scale_length = 1.
