@@ -59,4 +59,3 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
  assert.deepEqual(errors,[]);console.log(JSON.stringify({passed:['multi-digit input scroll/focus','empty input rejection','parameter position sync','focus pick keeps start','native gizmo drag','12 mode-switch/edit cycles','pole/coincident rendering','shot playback','independent segments','snapshot inheritance','file reopen','legacy conversion'],final:await state(),errors}));
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
-

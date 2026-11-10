@@ -43,4 +43,3 @@ class SceneAssetTests(unittest.TestCase):
    finally:
     sceneasset.unlink(missing_ok=True)
 if __name__=='__main__':unittest.main()
-

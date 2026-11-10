@@ -18,4 +18,3 @@ const assert=require('node:assert/strict');
  const clip=page.locator('[data-clip]').last();await clip.click();assert.ok(await page.evaluate(()=>__test.time>=3));
  await page.locator('#expandInspector').click();assert.equal(await page.locator('.settings-column').count(),0);await page.locator('#expandInspector').click();assert.equal(await page.locator('.focus-section').count(),1);await page.locator('[data-shot="focus-0"]').fill('0.2');await page.locator('[data-shot="focus-0"]').press('Tab');assert.equal(await page.locator('[data-shot="focus-0"]').inputValue(),'0.2');assert.deepEqual(errors,[]);console.log('film UI passed');
 }finally{await browser.close();}})().catch(e=>{console.error(e);process.exitCode=1});
-

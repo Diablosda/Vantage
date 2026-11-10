@@ -4,7 +4,7 @@ Windows x64 本机三维镜头预演工具，支持场景/模型导入、人物�
 
 ## 安装与运行
 
-普通用户使用 Release 中的 `Vantage-2.1.2-Setup.exe` 离线安装包。包内包含 Blender 5.2.2（及其 Python）、FFmpeg 7.1 和前端运行文件，不需分别安装 Python、Node.js、Blender 或 FFmpeg。默认按当前 Windows 用户安装，无需管理员权限；安装后通过快捷方式启动 Vantage，界面在本机浏览器打开。系统和显卡需满足 Blender 及 WebGL 要求。
+普通用户使用 [Release](https://github.com/Diablosda/Camera-Control/releases/tag/v2.1.2) 中的 `Vantage-2.1.2-Setup.exe` 离线安装包。包内包含 Blender 5.2.2（及其 Python）、FFmpeg 7.1 和前端运行文件，不需分别安装 Python、Node.js、Blender 或 FFmpeg。默认按当前 Windows 用户安装，无需管理员权限；安装后通过快捷方式启动 Vantage，界面在本机浏览器打开。系统和显卡需满足 Blender 及 WebGL 要求。
 
 源码仓库不包含大体积运行组件及个人素材。源码方式可将 Blender 放在同级 `blender/blender-5.2.2-windows-x64/`，或设置 `PREVIS_BLENDER`；FFmpeg 用 `PREVIS_FFMPEG` 指定。源码和安装版均可优先使用程序内 `runtime/blender`、`runtime/ffmpeg` 组件。
 
