@@ -22,7 +22,7 @@ def references(project):
             if seg.get('motion'): motions.add(_name(seg['motion']['name']))
     return models, motions, scenes
 
-def create_bundle(project, destination, root):
+def create_bundle(project, destination, root, legacy_root=None):
     models, motions, scenes = references(project)
     project_data=json.dumps(project, ensure_ascii=False, separators=(',',':')).encode('utf-8')
     if len(project_data)>128*1024*1024:raise ValueError('工程配置超过 128 MB')
@@ -31,7 +31,10 @@ def create_bundle(project, destination, root):
     for names, src, prefix in ((models, root/'model', 'Assets/Models/'), (motions, root/'动作', 'Assets/Motions/'), (scenes, root/'场景', 'Assets/Scenes/')):
         for name in sorted(names):
             path=(src/name).resolve()
-            if path.parent!=src.resolve() or not path.is_file():raise ValueError('找不到资源：'+name)
+            if not path.is_file() and legacy_root is not None:
+                old=(Path(legacy_root)/src.name/name).resolve()
+                if old.parent==(Path(legacy_root)/src.name).resolve() and old.is_file():path=old
+            if path.parent not in {src.resolve(),(Path(legacy_root)/src.name).resolve() if legacy_root is not None else src.resolve()} or not path.is_file():raise ValueError('找不到资源：'+name)
             size=path.stat().st_size
             if size>128*1024*1024:raise ValueError('单个资源超过 128 MB：'+name)
             total+=size

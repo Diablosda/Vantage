@@ -18,6 +18,7 @@ from urllib.parse import urlparse,parse_qs,unquote,quote
 import urllib.request
 import uuid
 import webbrowser
+from backend.paths import data_root,cache_root,asset_file,blender_path,ffmpeg_path,blender_environment
 from backend.native_dialog import choose_path
 from backend.video_output import video_target,publish_video
 from backend.export_plan import export_times
@@ -25,9 +26,9 @@ from backend.model import validate
 from backend.portable import create_bundle, read_bundle, MAX_ARCHIVE
 
 ROOT=Path(__file__).resolve().parent
-WEB=ROOT/'web';PROJECTS=ROOT/'projects';RUNTIME=ROOT/'.runtime'
-BLENDER=Path(os.environ.get('PREVIS_BLENDER',str(ROOT.parent/'blender'/'blender-5.2.2-windows-x64'/'blender.exe')))
-TOKEN=secrets.token_urlsafe(32);JOBS={};GATE=threading.Semaphore(1);APP_VERSION='2.1.1'
+WEB=ROOT/'web';DATA=data_root();PROJECTS=DATA/'Projects';RUNTIME=cache_root()/'Jobs'
+BLENDER=blender_path()
+TOKEN=secrets.token_urlsafe(32);JOBS={};GATE=threading.Semaphore(1);APP_VERSION='2.1.2'
 MAX_BODY=128*1024**2
 
 # Capture one frontend release per running process, so updating files cannot mix
@@ -44,6 +45,7 @@ def source_build(root=ROOT,web_files=None):
     for name,data in sorted((web_files if web_files is not None else {p.relative_to(root/'web').as_posix():p.read_bytes() for p in (root/'web').rglob('*') if p.is_file()}).items()):
         digest.update(name.encode());digest.update(data)
     return digest.hexdigest()
+INSTALL_ID=hashlib.sha256(str(ROOT.resolve()).encode()).hexdigest()
 BUILD_ID=source_build(web_files=WEB_FILES)
 CAPABILITIES=['native-save','video-only','save-directory','project-bundle','render-video','native-directory','preview-export','shot-export']
 
@@ -53,7 +55,7 @@ def run_job(job,payload,source=None):
         job.update(state='running',message='正在读取场景' if payload['mode']=='import' else '正在准备工程',progress=3)
         try:
             if not BLENDER.is_file():raise ValueError('找不到本地渲染引擎，请检查项目内的 Blender 安装')
-            RUNTIME.mkdir(exist_ok=True)
+            RUNTIME.mkdir(parents=True,exist_ok=True)
             with tempfile.TemporaryDirectory(prefix='job-',dir=RUNTIME) as work:
                 work=Path(work)
                 if source is not None:
@@ -61,9 +63,10 @@ def run_job(job,payload,source=None):
                     if payload['mode']=='convert':payload['output']=str(work/'converted.glb')
                     elif payload['mode']=='import':payload['packedSource']=str(work/'packed.blend')
                 if payload['mode']=='render' and payload.get('times'):payload['frameFolder']=str(work/'frames')
+                payload['dataRoot']=str(DATA)
                 task=work/'task.json';task.write_text(json.dumps(payload,ensure_ascii=False),encoding='utf-8')
                 flags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0
-                process=subprocess.Popen([str(BLENDER),'--background','--factory-startup','--disable-autoexec','--python-exit-code','1','--python',str(ROOT/'backend'/'blender_worker.py'),'--',str(task)],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,encoding='utf-8',errors='replace',creationflags=flags,cwd=work)
+                process=subprocess.Popen([str(BLENDER),'--background','--factory-startup','--disable-autoexec','--python-use-system-env','--python-exit-code','1','--python',str(ROOT/'backend'/'blender_worker.py'),'--',str(task)],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,encoding='utf-8',errors='replace',creationflags=flags,cwd=work,env=blender_environment(DATA))
                 job['process']=process;tail=[]
                 for line in process.stdout:
                     tail=(tail+[line.rstrip()])[-20:]
@@ -78,20 +81,20 @@ def run_job(job,payload,source=None):
                 result=json.loads(result_path.read_text(encoding='utf-8')) if result_path.exists() else {}
                 if code or result.get('error'):raise ValueError(result.get('error') or '本地引擎未完成：'+'\n'.join(tail[-6:]))
                 if payload['mode']=='convert':
-                    data=Path(payload['output']).read_bytes();name=hashlib.sha256(data).hexdigest()+'.glb';folder=ROOT/'model';folder.mkdir(exist_ok=True)
+                    data=Path(payload['output']).read_bytes();name=hashlib.sha256(data).hexdigest()+'.glb';folder=DATA/'model';folder.mkdir(parents=True,exist_ok=True)
                     target=folder/name
                     if not target.exists():target.write_bytes(data)
                     result['name']=name
                 if payload['mode']=='import' and source is not None and not result.get('project') and not result.get('needsSnapshot'):
                     packed=Path(payload['packedSource']).read_bytes()
                     if len(packed)>MAX_BODY:raise ValueError('打包场景超过 128 MB')
-                    asset=hashlib.sha256(packed).hexdigest()+'.blend';folder=ROOT/'场景';folder.mkdir(exist_ok=True)
+                    asset=hashlib.sha256(packed).hexdigest()+'.blend';folder=DATA/'场景';folder.mkdir(parents=True,exist_ok=True)
                     target=folder/asset
                     if not target.exists():target.write_bytes(packed)
                     for obj in result.get('objects',[]):
                         if obj.get('sceneSource'):obj['sceneSource']['asset']=asset
                 if payload.get('video'):
-                    ffmpeg=Path(os.environ.get('PREVIS_FFMPEG') or (ROOT.parent/'blender'/'tools'/'ffmpeg'/'ffmpeg.exe'))
+                    ffmpeg=ffmpeg_path()
                     if not ffmpeg.is_file():
                         found=shutil.which('ffmpeg')
                         if not found:raise ValueError('找不到首尾帧提取工具，请配置 PREVIS_FFMPEG 或将 FFmpeg 加入 PATH')
@@ -119,7 +122,7 @@ def run_job(job,payload,source=None):
                 if partial.exists():partial.unlink()
 
 def submit_video(payload):
-    p=payload['project'];errors=validate(p,True)
+    p=payload['project'];errors=validate(p,True,asset_root=DATA)
     if errors:raise ValueError('\n'.join(errors))
     browser_save=payload.pop('browserSave',False)
     if not browser_save:
@@ -142,13 +145,14 @@ def run_video_job(job,payload):
             work=Path(job['_temp'].name);flags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0
             if payload['mode']=='render':
                 if not BLENDER.is_file():raise ValueError('找不到 Blender 引擎')
+                payload['dataRoot']=str(DATA)
                 task=work/'task.json';task.write_text(json.dumps(payload,ensure_ascii=False),encoding='utf-8')
-                process=subprocess.Popen([str(BLENDER),'--background','--factory-startup','--disable-autoexec','--python-exit-code','1','--python',str(ROOT/'backend'/'blender_worker.py'),'--',str(task)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=flags,cwd=work)
+                process=subprocess.Popen([str(BLENDER),'--background','--factory-startup','--disable-autoexec','--python-use-system-env','--python-exit-code','1','--python',str(ROOT/'backend'/'blender_worker.py'),'--',str(task)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=flags,cwd=work,env=blender_environment(DATA))
                 job['process']=process;code=process.wait();job.pop('process',None)
                 result_path=work/'result.json';answer=json.loads(result_path.read_text(encoding='utf-8')) if result_path.is_file() else {}
                 if not job['cancel'].is_set() and (code or answer.get('error')):raise ValueError(answer.get('error','光影渲染失败'))
             if job['cancel'].is_set():job['state']='cancelled';return
-            ffmpeg=Path(os.environ.get('PREVIS_FFMPEG') or (ROOT.parent/'blender'/'tools'/'ffmpeg'/'ffmpeg.exe'))
+            ffmpeg=ffmpeg_path()
             if not ffmpeg.is_file():ffmpeg=shutil.which('ffmpeg')
             if not ffmpeg:raise ValueError('找不到 FFmpeg 编码工具')
             command=[str(ffmpeg),'-v','error','-framerate',str(payload['project']['settings']['fps']),'-i',str(Path(payload['frameFolder'])/'%06d.png'),'-frames:v',str(job['frames']),'-c:v','libx264','-crf','18','-pix_fmt','yuv420p','-movflags','+faststart','-y',payload['video']]
@@ -173,7 +177,7 @@ def submit(payload,source=None):
     ident=uuid.uuid4().hex
     job={'id':ident,'state':'queued','progress':0,'message':'等待本地引擎','cancel':threading.Event(),'downloads':{}}
     if payload['mode'] not in ('import','convert'):
-        p=payload['project'];errors=validate(p,payload['mode'] in ('render','preview'))
+        p=payload['project'];errors=validate(p,payload['mode'] in ('render','preview'),asset_root=DATA)
         if errors:raise ValueError('\n'.join(errors))
         destination=payload.pop('outputDirectory',None)
         if destination:
@@ -181,14 +185,14 @@ def submit(payload,source=None):
             parent=Path(destination).resolve()
             if not parent.is_dir():raise ValueError('保存目录不存在，请重新选择')
         else:
-            PROJECTS.mkdir(exist_ok=True);parent=PROJECTS.resolve()
+            PROJECTS.mkdir(parents=True,exist_ok=True);parent=PROJECTS.resolve()
         if shutil.disk_usage(parent).free<max(128*1024**2,p['settings']['duration']*4*1024**2):raise ValueError('输出磁盘空间不足')
         name=re.sub(r'[^\w\-\u4e00-\u9fff]','_',str(p.get('name','未命名工程')))[:60] or '未命名工程'
         folder=parent/(name+'_'+time.strftime('%Y%m%d_%H%M%S')+'_'+ident[:6]);folder.mkdir()
         model=folder/(name+'.previs');model.write_text(json.dumps(p,ensure_ascii=False),encoding='utf-8')
         payload['blend']=str(folder/(name+'.blend'))
         if payload['mode'] in ('render','preview'):payload['video']=str(folder/(name+'.mp4'))
-        bundle=folder/(name+'.previs.zip');create_bundle(p,bundle,ROOT)
+        bundle=folder/(name+'.previs.zip');create_bundle(p,bundle,DATA,legacy_root=ROOT)
         files={'project':model,'bundle':bundle,'blend':Path(payload['blend'])}
         if payload.get('video'):
             files['video']=Path(payload['video']);files['firstFrame']=folder/'firstFrame.png';files['lastFrame']=folder/'lastFrame.png'
@@ -216,9 +220,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self.valid_host():self.json({'error':'Invalid host'},403);return
         path=unquote(urlparse(self.path).path)
         if path=='/api/models':
-            folder=ROOT/'model';folder.mkdir(exist_ok=True)
-            self.json({'models':[{'name':p.name,'size':p.stat().st_size} for p in sorted(folder.glob('*.glb')) if p.resolve().is_relative_to(folder.resolve())]});return
-        if path=='/api/status':self.json({'app':'previs-local','version':APP_VERSION,'build':BUILD_ID,'apiVersion':1,'capabilities':CAPABILITIES,'pid':os.getpid(),'engineReady':BLENDER.is_file(),'token':TOKEN,'defaultOutputDirectory':str(PROJECTS.resolve())});return
+            folder=DATA/'model';folder.mkdir(parents=True,exist_ok=True)
+            models={p.name:p for p in (ROOT/'model').glob('*.glb') if p.is_file() and not p.is_symlink()};models.update({p.name:p for p in folder.glob('*.glb') if p.is_file() and not p.is_symlink()});self.json({'models':[{'name':name,'size':p.stat().st_size} for name,p in sorted(models.items())]});return
+        if path=='/api/status':self.json({'app':'previs-local','version':APP_VERSION,'build':BUILD_ID,'installation':INSTALL_ID,'apiVersion':1,'capabilities':CAPABILITIES,'pid':os.getpid(),'engineReady':BLENDER.is_file(),'token':TOKEN,'defaultOutputDirectory':str(PROJECTS.resolve())});return
         if path.startswith('/api/jobs/'):
             job=JOBS.get(path.rsplit('/',1)[-1])
             self.json({k:v for k,v in job.items() if k not in ('process','cancel','files') and not k.startswith('_')} if job else {'error':'任务不存在'},200 if job else 404);return
@@ -228,9 +232,11 @@ class Handler(BaseHTTPRequestHandler):
             _,_,_,ident,key,filename=parts;job=JOBS.get(ident);filepath=Path(job['files'][key]) if job and job.get('state')=='done' and key in job.get('files',{}) else None
             if not filepath or filename!=filepath.name or not filepath.is_file():self.json({'error':'文件不存在或任务尚未完成'},404);return
             inline=parse_qs(urlparse(self.path).query).get('inline')==['1'] and key=='video';self.send_file(filepath,attachment=not inline,inline=inline);return
-        base=(ROOT/'model') if path.startswith('/models/') else (ROOT/'动作') if path.startswith('/motions/') else PROJECTS if path.startswith('/files/') else WEB
+        base=(DATA/'model') if path.startswith('/models/') else (DATA/'动作') if path.startswith('/motions/') else PROJECTS if path.startswith('/files/') else WEB
         relative=path[len('/models/'):] if path.startswith('/models/') else path[len('/motions/'):] if path.startswith('/motions/') else path[len('/files/'):]  if base==PROJECTS else path.lstrip('/') or 'index.html'
         target=(base/relative).resolve()
+        if path.startswith(('/models/','/motions/')) and not target.is_file():target=asset_file('model' if path.startswith('/models/') else '动作',relative,DATA,ROOT)
+        if path.startswith(('/models/','/motions/')) and target.parent==(ROOT/('model' if path.startswith('/models/') else '动作')).resolve():base=target.parent
         if base==WEB:
             if not target.is_relative_to(WEB.resolve()):self.json({'error':'文件不存在'},404);return
             key=target.relative_to(WEB.resolve()).as_posix();data=WEB_FILES.get(key)
@@ -269,13 +275,13 @@ class Handler(BaseHTTPRequestHandler):
             raw=self.rfile.read(length)
             if url.path=='/api/project-bundle':
                 if not raw.startswith(b'PK\x03\x04'):raise ValueError('选择的不是 ZIP 工程包；请使用保存目录中的 .previs.zip 文件')
-                project=read_bundle(raw,ROOT);errors=validate(project)
+                project=read_bundle(raw,DATA);errors=validate(project,asset_root=DATA)
                 if errors:raise ValueError('；'.join(errors))
                 self.json({'project':project});return
             if url.path=='/api/motions':
                 query=parse_qs(url.query); name=query.get('model',[''])[0]
-                source=(ROOT/'model'/name).resolve()
-                if source.parent!=(ROOT/'model').resolve() or source.suffix.lower()!='.glb' or not source.is_file():raise ValueError('请先将对象替换为原始 GLB 模型')
+                source=asset_file('model',name,DATA,ROOT)
+                if source.parent not in {(DATA/'model').resolve(),(ROOT/'model').resolve()} or source.suffix.lower()!='.glb' or not source.is_file():raise ValueError('请先将对象替换为原始 GLB 模型')
                 def gltf(blob):
                     if len(blob)<20 or blob[:4]!=b'glTF' or struct.unpack_from('<I',blob,4)[0]!=2 or struct.unpack_from('<I',blob,8)[0]!=len(blob):raise ValueError('请选择有效的 GLB 文件')
                     size,kind=struct.unpack_from('<I4s',blob,12)
@@ -301,14 +307,14 @@ class Handler(BaseHTTPRequestHandler):
                     if not name or other is None or any(node.get(k)!=other.get(k) for k in ('translation','rotation','scale','matrix')):raise ValueError('动作骨架与模型不一致，需使用同一模型骨架制作的 GLB')
                     targets.append(name)
                 if not targets:raise ValueError('文件没有骨骼动作')
-                folder=ROOT/'动作';folder.mkdir(exist_ok=True); filename=hashlib.sha256(raw).hexdigest()+'.glb';dest=folder/filename
+                folder=DATA/'动作';folder.mkdir(parents=True,exist_ok=True); filename=hashlib.sha256(raw).hexdigest()+'.glb';dest=folder/filename
                 if not dest.exists():dest.write_bytes(raw)
                 self.json({'name':filename,'clip':clips[0].get('name','动作')});return
             if url.path=='/api/models/upload':
                 query=parse_qs(url.query);name=query.get('name',[''])[0];suffix=Path(name).suffix.lower()
                 if suffix=='.glb':
                     if len(raw)<20 or raw[:4]!=b'glTF' or struct.unpack_from('<I',raw,4)[0]!=2 or struct.unpack_from('<I',raw,8)[0]!=len(raw):raise ValueError('请选择有效的 GLB 文件')
-                    folder=ROOT/'model';folder.mkdir(exist_ok=True);target=folder/(hashlib.sha256(raw).hexdigest()+'.glb')
+                    folder=DATA/'model';folder.mkdir(parents=True,exist_ok=True);target=folder/(hashlib.sha256(raw).hexdigest()+'.glb')
                     if not target.exists():target.write_bytes(raw)
                     self.json({'name':target.name});return
                 if suffix not in ('.gltf','.zip'):raise ValueError('请选择 GLB、内嵌资源的 glTF 或 glTF 资源 ZIP')
@@ -330,9 +336,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.json({'received':job['_received']});return
             data=json.loads(raw)
             if url.path=='/api/models/import':
-                source=(ROOT/'model'/data['name']).resolve()
-                if source.parent!=(ROOT/'model').resolve() or source.suffix.lower()!='.glb' or not source.is_file():raise ValueError('模型不存在')
+                source=asset_file('model',data['name'],DATA,ROOT)
+                if source.parent not in {(DATA/'model').resolve(),(ROOT/'model').resolve()} or source.suffix.lower()!='.glb' or not source.is_file():raise ValueError('模型不存在')
                 self.json({'job':submit({'mode':'import','source':str(source),'sourceName':source.stem,'glb':True,'snapshot':True})},202);return
+            if url.path=='/api/shutdown':
+                if any(j['state'] in ('queued','running','uploading') for j in JOBS.values()):self.json({'error':'仍有任务正在运行'},409);return
+                self.json({'stopping':True});threading.Thread(target=self.server.shutdown,daemon=True).start();return
             if url.path in ('/api/choose-directory','/api/choose-video'):
                 answer=choose_path(ROOT,'video' if url.path.endswith('choose-video') else 'directory',data.get('name','Vantage.mp4'),data.get('directory',''))
                 self.json(answer);return
@@ -351,7 +360,7 @@ class Handler(BaseHTTPRequestHandler):
                     ident=submit_video({'mode':mode,'project':data['project'],'outputFile':data.get('outputFile'),'overwrite':data.get('overwrite') is True,'browserSave':data.get('browserSave') is True,'times':times})
                     self.json({'job':ident,'times':times if mode=='preview' else None},202);return
                 self.json({'job':submit({'mode':'render' if url.path.endswith('export') else 'save','project':data['project'],'outputDirectory':data.get('outputDirectory')})},202);return
-            if url.path=='/api/validate':self.json({'errors':validate(data['project'],data.get('export',False))});return
+            if url.path=='/api/validate':self.json({'errors':validate(data['project'],data.get('export',False),asset_root=DATA)});return
             if url.path.endswith('/cancel'):
                 job=JOBS.get(url.path.split('/')[-2])
                 if job and job['state'] in ('queued','running','uploading'):
@@ -364,7 +373,20 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError,KeyError,TypeError,OSError) as exc:self.json({'error':str(exc)},400)
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--port',type=int,default=8765);parser.add_argument('--open',action='store_true');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--port',type=int,default=8765);parser.add_argument('--open',action='store_true');parser.add_argument('--stop',action='store_true');args=parser.parse_args()
+    if args.stop:
+        failed=False
+        for candidate in range(8765,8866):
+            try:
+                status=json.load(urllib.request.urlopen(f'http://127.0.0.1:{candidate}/api/status',timeout=.15))
+                if status.get('installation')!=INSTALL_ID:continue
+                request=urllib.request.Request(f'http://127.0.0.1:{candidate}/api/shutdown',data=b'{}',headers={'X-Previs-Token':status['token'],'Content-Type':'application/json'})
+                urllib.request.urlopen(request,timeout=2).close()
+                time.sleep(.6)
+            except urllib.error.HTTPError:failed=True
+            except (OSError,ValueError):pass
+        if failed:raise SystemExit(2)
+        return
     port=args.port;legacy_port=None;server=None
     if args.open:
         def existing(port):

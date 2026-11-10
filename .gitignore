@@ -26,3 +26,7 @@ dist/
 *.key
 *.pfx
 *.log
+
+.release-work/
+runtime/
+.third-party-cache/

@@ -3,11 +3,12 @@ import importlib.util
 import math
 from pathlib import Path
 import sys
+from backend.paths import asset_file
 ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('previs_geometry',ROOT/'ai_previs'/'geometry.py')
 geometry=importlib.util.module_from_spec(spec);sys.modules[spec.name]=geometry;spec.loader.exec_module(geometry)
 
-def validate(project,export=False):
+def validate(project,export=False,asset_root=None):
     errors=[]
     if not isinstance(project,dict) or project.get('version')!=2:return ['不是此工作台的有效工程文件']
     objects=project.get('objects',[]);settings=project.get('settings',{})
@@ -69,19 +70,19 @@ def validate(project,export=False):
             if not isinstance(source,dict) or not isinstance(source.get('name'),str) or not source['name'] or '/' in source['name'] or '\\' in source['name'] or Path(source['name']).suffix.lower()!='.glb' or not vector(source.get('center')):
                 errors.append(name+'：模型来源无效')
             elif not finite(source.get('localYaw',0)):errors.append(name+'：模型方向校准无效')
-            elif not (ROOT/'model'/source['name']).is_file():errors.append(name+'：找不到原始模型 '+source['name'])
+            elif not asset_file('model',source['name'],asset_root,ROOT).is_file():errors.append(name+'：找不到原始模型 '+source['name'])
         scene_source=o.get('sceneSource')
         if scene_source is not None:
             if not isinstance(scene_source,dict) or not isinstance(scene_source.get('asset'),str) or len(scene_source['asset'])!=70 or not scene_source['asset'].endswith('.blend') or any(c not in '0123456789abcdef' for c in scene_source['asset'][:-6]) or not isinstance(scene_source.get('object'),str) or not scene_source['object'] or scene_source.get('kind') not in ('MESH','LIGHT'):
                 errors.append(name+'：场景来源无效')
             elif scene_source['kind']=='LIGHT' and not vector(scene_source.get('localMatrix'),16):errors.append(name+'：灯光变换无效')
-            elif not (ROOT/'场景'/scene_source['asset']).is_file():errors.append(name+'：找不到场景资源')
+            elif not asset_file('场景',scene_source['asset'],asset_root,ROOT).is_file():errors.append(name+'：找不到场景资源')
         for segment in o.get('segments',[]):
             motion=segment.get('motion')
             if motion is not None:
                 name_motion=motion.get('name') if isinstance(motion,dict) else None
                 if not o.get('modelSource') or not isinstance(name_motion,str) or len(name_motion)!=68 or not name_motion.endswith('.glb') or any(c not in '0123456789abcdef' for c in name_motion[:-4]):errors.append(name+'：动作来源无效')
-                elif not (ROOT/'动作'/name_motion).is_file():errors.append(name+'：找不到绑定的动作文件')
+                elif not asset_file('动作',name_motion,asset_root,ROOT).is_file():errors.append(name+'：找不到绑定的动作文件')
         for part in o.get('parts',[]):
             if part.get('shape') not in ('BOX','SPHERE','CYLINDER','CONE','MESH'):errors.append(name+'：部件形状无效')
             if part.get('shape')=='CONE' and (not finite(part.get('topRatio',0)) or part.get('topRatio',0)<0):errors.append(name+'：圆锥顶部半径无效')

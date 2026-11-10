@@ -1,0 +1,27 @@
+{
+  "blender": {
+    "url": "https://download.blender.org/release/Blender5.2/blender-5.2.2-windows-x64.zip",
+    "sha256": "3849d17a682cba006075aaa3f3597ecb5c9c30ec31035b2e092c53e40679b535",
+    "bytes": 404453484
+  },
+  "ffmpeg": {
+    "url": "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip",
+    "sha256": "fa7d4d7e795db0e2503f49f105f46ed5852386f0cfdd819899be3b65ebde24fc",
+    "bytes": 92100272
+  },
+  "blender-source": {
+    "url": "https://download.blender.org/source/blender-5.2.2.tar.xz",
+    "sha256": "56a3b1ec97479ff24dce65d2f09f8a1895005cece279b701fe4fcf74bce3f77e",
+    "bytes": 93671672
+  },
+  "ffmpeg-source": {
+    "url": "https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz",
+    "sha256": "40973d44970dbc83ef302b0609f2e74982be2d85916dd2ee7472d30678a7abe6",
+    "bytes": 11011364
+  },
+  "nsis": {
+    "url": "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.13/nsis-3.13.zip",
+    "sha256": "ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8",
+    "bytes": 2363925
+  }
+}

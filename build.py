@@ -6,9 +6,9 @@ from zipfile import ZIP_DEFLATED, ZipFile
 root=Path(__file__).resolve().parent
 version=re.search(r"APP_VERSION='([^']+)'",(root/'server.py').read_text(encoding='utf-8')).group(1)
 files=[]
-for folder in ('ai_previs','backend','web','launcher'):
+for folder in ('ai_previs','backend','web','launcher','packaging'):
     files.extend(p for p in (root/folder).rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.suffix not in ('.pyc','.pyo') and p.name!='fetch_vendor.py')
-files.extend(root/name for name in ('server.py','Vantage.exe','Vantage.Dialogs.exe','Vantage.cmd','产品说明.md','README.md','.gitignore','build.py'))
+files.extend(root/name for name in ('server.py','Vantage.exe','Vantage.Dialogs.exe','Vantage.cmd','产品说明.md','README.md','THIRD_PARTY.md','package.json','.gitignore','build.py'))
 output=root/'dist'/('Vantage-'+version+'-source.zip')
 output.parent.mkdir(exist_ok=True)
 temporary=output.with_suffix('.tmp')

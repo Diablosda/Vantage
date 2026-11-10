@@ -2,10 +2,13 @@
 import json
 from pathlib import Path
 import sys
+import os
+sys.dont_write_bytecode=True
 import traceback
 import bpy
 from mathutils import Matrix, Vector
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
+from backend.paths import asset_file
 from backend.model import validate
 import ai_previs
 from ai_previs import runtime
@@ -47,7 +50,7 @@ def build(project,render=False):
             obj.hide_render=data.get('hidden',False)
             model_source=data.get('modelSource')
             if model_source:
-                source=(ROOT/'model'/model_source['name']).resolve()
+                source=asset_file('model',model_source['name'],legacy=ROOT)
                 if source.parent!=(ROOT/'model').resolve() or source.suffix.lower()!='.glb' or not source.is_file():raise ValueError('找不到原始模型：'+model_source['name'])
                 before=set(bpy.data.objects)
                 bpy.ops.import_scene.gltf(filepath=str(source))
@@ -64,7 +67,7 @@ def build(project,render=False):
                 if bindings:
                     rig.animation_data_create();rig.animation_data.action=None
                     for seg in sorted(bindings,key=lambda s:s['startTime']):
-                        motion_path=ROOT/'动作'/seg['motion']['name'];prior=set(bpy.data.objects)
+                        motion_path=asset_file('动作',seg['motion']['name'],legacy=ROOT);prior=set(bpy.data.objects)
                         bpy.ops.import_scene.gltf(filepath=str(motion_path));temporary=set(bpy.data.objects)-prior
                         source_rig=next((x for x in temporary if x.type=='ARMATURE' and x.animation_data and x.animation_data.action),None)
                         if not source_rig:raise ValueError('动作文件缺少骨骼动画')
@@ -79,8 +82,8 @@ def build(project,render=False):
             scene_source=data.get('sceneSource')
             original=None
             if scene_source:
-                source=(ROOT/'场景'/scene_source['asset']).resolve()
-                if source.parent!=(ROOT/'场景').resolve() or not source.is_file():raise ValueError('找不到原始场景：'+scene_source['asset'])
+                source=(asset_file('场景',scene_source['asset'],legacy=ROOT)).resolve()
+                if not source.is_file():raise ValueError('找不到原始场景：'+scene_source['asset'])
                 with bpy.data.libraries.load(str(source),link=False) as (available,loaded):
                     if scene_source['object'] not in available.objects:raise ValueError('场景对象不存在：'+scene_source['object'])
                     loaded.objects=[scene_source['object']]
@@ -225,6 +228,7 @@ def main():
     task=Path(sys.argv[sys.argv.index('--')+1]);payload=json.loads(task.read_text(encoding='utf-8'));result=task.parent/'result.json'
     try:
         mode=payload['mode']
+        if payload.get('dataRoot'):os.environ['VANTAGE_DATA_DIR']=payload['dataRoot']
         if mode=='import':answer=import_scene(payload)
         elif mode=='convert':answer=convert_model(payload)
         else:
