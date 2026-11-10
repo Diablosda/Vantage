@@ -377,14 +377,18 @@ def main():
     if args.stop:
         failed=False
         for candidate in range(8765,8866):
+            ours=False
             try:
                 status=json.load(urllib.request.urlopen(f'http://127.0.0.1:{candidate}/api/status',timeout=.15))
                 if status.get('installation')!=INSTALL_ID:continue
+                ours=True
                 request=urllib.request.Request(f'http://127.0.0.1:{candidate}/api/shutdown',data=b'{}',headers={'X-Previs-Token':status['token'],'Content-Type':'application/json'})
                 urllib.request.urlopen(request,timeout=2).close()
                 time.sleep(.6)
-            except urllib.error.HTTPError:failed=True
-            except (OSError,ValueError):pass
+            except urllib.error.HTTPError:
+                if ours:failed=True
+            except (OSError,ValueError):
+                if ours:failed=True
         if failed:raise SystemExit(2)
         return
     port=args.port;legacy_port=None;server=None

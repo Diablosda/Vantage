@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'tests'))
 from test_web_backend import fixture
-work=ROOT/'.release-work'/'acceptance'
+work=ROOT/'.release-work'/'acceptance-final'
 if work.exists():raise SystemExit('Choose a fresh acceptance directory')
 work.mkdir(parents=True);install=work/'Installed';data=work/'UserData';cache=work/'UserCache';output=work/'Videos';projects=work/'Projects'
 for p in [data,cache,output,projects]:p.mkdir()
@@ -18,7 +18,7 @@ def snapshot():return {p.relative_to(install).as_posix():hashlib.sha256(p.read_b
 before=snapshot();env={**os.environ,'VANTAGE_DATA_DIR':str(data),'VANTAGE_CACHE_DIR':str(cache),'PYTHONDONTWRITEBYTECODE':'1','PATH':os.environ.get('SystemRoot','C:/Windows')+'/System32'}
 for key in ['PREVIS_BLENDER','PREVIS_FFMPEG','PYTHONPATH','PYTHONHOME']:env.pop(key,None)
 assert subprocess.run([str(install/'Vantage.exe'),'--check'],env=env,timeout=15).returncode==0
-opener=urllib.request.build_opener(urllib.request.ProxyHandler({}));status=None
+opener=urllib.request.build_opener(urllib.request.ProxyHandler({}));status=None;success=False
 try:
  for candidate in range(8820,8866):
   sock=socket.socket()
@@ -39,14 +39,29 @@ try:
  print('Installation folder additions:',added,flush=True);print('Installation folder changed files:',changed,flush=True)
  assert not added and not changed,'Application wrote to installation folder'
  assert list(projects.rglob('*.previs.zip')) and (output/'all.mp4').is_file()
+ success=True
 finally:
+ if status and not success:subprocess.run(['taskkill','/PID',str(status['pid']),'/T','/F'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+import threading
+class Foreign(BaseHTTPRequestHandler):
+ def log_message(self,*args):pass
+ def do_GET(self):self.send_response(404 if self.path=='/api/status' else 200);self.end_headers();self.wfile.write(b'alive')
+for candidate in range(8765,8820):
+ try:foreign=ThreadingHTTPServer(('127.0.0.1',candidate),Foreign);break
+ except OSError:continue
+threading.Thread(target=foreign.serve_forever,daemon=True).start()
+try:
+ subprocess.run([str(install/'Uninstall.exe'),'/S'],env=env,timeout=60)
+ for _ in range(300):
+  if not (install/'Vantage.exe').exists():break
+  time.sleep(.1)
+ assert not (install/'Vantage.exe').exists()
+ assert opener.open(f'http://127.0.0.1:{foreign.server_port}/ping').read()==b'alive'
+ assert (install/'keep-custom-file.txt').read_text()=='uninstaller must preserve unknown files'
+ assert (data/'keep-user-data.txt').read_text()=='must survive uninstall'
+ assert (output/'all.mp4').is_file() and list(projects.rglob('*.previs.zip'))
+ print('PASS: offline install, bundled engines with stripped PATH, no installation writes, uninstall stops owned service, ignores foreign 404, preserves user data and custom files',flush=True)
+finally:
+ foreign.shutdown();foreign.server_close()
  if status:subprocess.run(['taskkill','/PID',str(status['pid']),'/T','/F'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-subprocess.run([str(install/'Uninstall.exe'),'/S'],env=env,timeout=60)
-for _ in range(200):
- if not (install/'Vantage.exe').exists():break
- time.sleep(.1)
-assert not (install/'Vantage.exe').exists()
-assert (install/'keep-custom-file.txt').read_text()=='uninstaller must preserve unknown files'
-assert (data/'keep-user-data.txt').read_text()=='must survive uninstall'
-assert (output/'all.mp4').is_file() and list(projects.rglob('*.previs.zip'))
-print('PASS: offline install, bundled engines with stripped PATH, installed EXE, save/export, no installation writes, uninstall preserves user data and custom files',flush=True)

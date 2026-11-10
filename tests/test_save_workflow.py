@@ -69,6 +69,15 @@ class LauncherTests(unittest.TestCase):
   data=io.BytesIO(json.dumps({'app':'previs-local','version':server.APP_VERSION,'build':server.BUILD_ID}).encode());opened=[]
   with patch.object(sys,'argv',['server.py','--open']),patch.object(server.urllib.request,'urlopen',return_value=data),patch.object(server,'ThreadingHTTPServer') as bind,patch.object(server.webbrowser,'open',side_effect=opened.append):server.main()
   bind.assert_not_called();self.assertEqual(opened,['http://127.0.0.1:8765'])
+class StopTests(unittest.TestCase):
+ def test_foreign_service_http_errors_do_not_block_uninstall(self):
+  error=server.urllib.error.HTTPError('http://localhost/api/status',404,'Not Found',{},None)
+  with patch.object(sys,'argv',['server.py','--stop']),patch.object(server.urllib.request,'urlopen',side_effect=error):server.main()
+ def test_own_active_jobs_block_uninstall(self):
+  h=SaveWorkflowTests().handler('/api/shutdown',b'{}')
+  with patch.object(server,'JOBS',{'active':{'state':'running'}}):h.do_POST()
+  self.assertEqual(h.status,409)
+
 class ReleaseTests(unittest.TestCase):
  def test_build_changes_when_frontend_or_backend_changes(self):
   with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:
