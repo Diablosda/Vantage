@@ -18,14 +18,16 @@ internal static class Launcher {
             string engineDir=Path.GetDirectoryName(Path.GetFullPath(engine));
             string python=Path.Combine(engineDir,"5.2","python","bin","python.exe");
             if (!File.Exists(python)) throw new FileNotFoundException("找不到 Blender 5.2 内置 Python，请检查 Blender 安装。\n\n"+python);
+            if (!File.Exists(Path.Combine(root,"Vantage.Dialogs.exe"))) throw new FileNotFoundException("缺少 Vantage.Dialogs.exe，请保留完整的 Vantage 程序文件。 ");
             if (args.Contains("--check")) return 0;
             bool noOpen=args.Contains("--no-open");
-            string parameters="-m server"+(noOpen?"":" --open");
+            string parameters="-B -m server"+(noOpen?"":" --open");
             int port=Array.IndexOf(args,"--port");
             int value;
             if (port>=0 && port+1<args.Length && Int32.TryParse(args[port+1],out value) && value>0 && value<=65535) parameters+=" --port "+value;
             var start=new ProcessStartInfo(python,parameters) { WorkingDirectory=root, UseShellExecute=false, CreateNoWindow=true, WindowStyle=ProcessWindowStyle.Hidden };
             start.EnvironmentVariables["PREVIS_BLENDER"]=Path.GetFullPath(engine);
+            start.EnvironmentVariables["PYTHONDONTWRITEBYTECODE"]="1";
             Process.Start(start);
             return 0;
         } catch (Exception exc) {

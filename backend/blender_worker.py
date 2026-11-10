@@ -108,6 +108,9 @@ def build(project,render=False):
                         uv=child.data.uv_layers.new(name=uv_data['name'])
                         for face,coords in zip(child.data.polygons,uv_data['values']):
                             for index,coord in zip(face.loop_indices,coords):uv.data[index].uv=coord
+                if data.get('locatorColor') and child.type=='MESH':
+                    color=data['locatorColor'].lstrip('#');rgb=[int(color[i:i+2],16)/255 for i in (0,2,4)]
+                    material=bpy.data.materials.new('定位颜色');material.diffuse_color=(*rgb,1);material.use_nodes=True;material.node_tree.nodes.get('Principled BSDF').inputs['Base Color'].default_value=(*rgb,1);child.data.materials.clear();child.data.materials.append(material)
                 child.parent=obj;child.matrix_parent_inverse=Matrix.Identity(4)
                 child.matrix_basis=matrix(part['matrix']);child.hide_render=data.get('hidden',False)
             assign_nodes(obj,[Node(tuple(n['position']),n['time'],n.get('dwell',0),n.get('exact',False),n.get('radius',.5),n.get('easing','LINEAR')) for n in (data.get('nodes',[]) if 'segments' not in data else [])])
@@ -227,7 +230,17 @@ def main():
         else:
             project=payload['project'];scene=build(project,mode=='render')
             scene.previs.project_path=payload['blend'];scene.previs.output_path=payload.get('video','')
-            if mode=='render':
+            if mode=='render' and payload.get('times'):
+                runtime.configure_render(scene);scene.render.engine='BLENDER_EEVEE'
+                if not any(o.type=='LIGHT' and not o.hide_render for o in scene.objects):
+                    light=bpy.data.lights.new('预演照明','SUN');light.energy=3;obj=bpy.data.objects.new('预演照明',light);scene.collection.objects.link(obj);obj.rotation_euler=(.4,-.5,-.3)
+                if hasattr(scene.render.image_settings,'media_type'):scene.render.image_settings.media_type='IMAGE'
+                scene.render.image_settings.file_format='PNG';folder=Path(payload['frameFolder']);folder.mkdir(parents=True,exist_ok=True)
+                bpy.ops.wm.save_as_mainfile(filepath=payload['blend'],check_existing=False)
+                for i,t in enumerate(payload['times']):
+                    frame=1+t*scene.render.fps;scene.frame_set(int(frame),subframe=frame-int(frame));runtime.evaluate(scene,strict=True)
+                    scene.render.filepath=str(folder/f'{i:06d}.png');bpy.ops.render.render(write_still=True)
+            elif mode=='render':
                 runtime.prepare_export(scene)
                 if any(o.type=='LIGHT' and not o.hide_render for o in scene.objects):
                     scene.render.engine='BLENDER_EEVEE'

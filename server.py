@@ -18,14 +18,34 @@ from urllib.parse import urlparse,parse_qs,unquote,quote
 import urllib.request
 import uuid
 import webbrowser
+from backend.native_dialog import choose_path
+from backend.video_output import video_target,publish_video
+from backend.export_plan import export_times
 from backend.model import validate
 from backend.portable import create_bundle, read_bundle, MAX_ARCHIVE
 
 ROOT=Path(__file__).resolve().parent
 WEB=ROOT/'web';PROJECTS=ROOT/'projects';RUNTIME=ROOT/'.runtime'
 BLENDER=Path(os.environ.get('PREVIS_BLENDER',str(ROOT.parent/'blender'/'blender-5.2.2-windows-x64'/'blender.exe')))
-TOKEN=secrets.token_urlsafe(32);JOBS={};GATE=threading.Semaphore(1);APP_VERSION='2.0.6'
+TOKEN=secrets.token_urlsafe(32);JOBS={};GATE=threading.Semaphore(1);APP_VERSION='2.1.1'
 MAX_BODY=128*1024**2
+
+# Capture one frontend release per running process, so updating files cannot mix
+# new JavaScript with a previously loaded Python backend.
+WEB_FILES={p.relative_to(WEB).as_posix():p.read_bytes() for p in WEB.rglob('*') if p.is_file()}
+def source_build(root=ROOT,web_files=None):
+    digest=hashlib.sha256(str(root.resolve()).encode())
+    for folder in ('backend','ai_previs'):
+        for path in sorted((root/folder).glob('*.py')):
+            digest.update(path.relative_to(root).as_posix().encode());digest.update(path.read_bytes())
+    digest.update((root/'server.py').read_bytes())
+    for path in sorted((root/'launcher').glob('*.cs')):digest.update(path.read_bytes())
+    if (root/'Vantage.Dialogs.exe').is_file():digest.update((root/'Vantage.Dialogs.exe').read_bytes())
+    for name,data in sorted((web_files if web_files is not None else {p.relative_to(root/'web').as_posix():p.read_bytes() for p in (root/'web').rglob('*') if p.is_file()}).items()):
+        digest.update(name.encode());digest.update(data)
+    return digest.hexdigest()
+BUILD_ID=source_build(web_files=WEB_FILES)
+CAPABILITIES=['native-save','video-only','save-directory','project-bundle','render-video','native-directory','preview-export','shot-export']
 
 def run_job(job,payload,source=None):
     with GATE:
@@ -40,6 +60,7 @@ def run_job(job,payload,source=None):
                     path=work/('source.zip' if payload['mode']=='convert' else 'source.blend');path.write_bytes(source);payload['source']=str(path)
                     if payload['mode']=='convert':payload['output']=str(work/'converted.glb')
                     elif payload['mode']=='import':payload['packedSource']=str(work/'packed.blend')
+                if payload['mode']=='render' and payload.get('times'):payload['frameFolder']=str(work/'frames')
                 task=work/'task.json';task.write_text(json.dumps(payload,ensure_ascii=False),encoding='utf-8')
                 flags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0
                 process=subprocess.Popen([str(BLENDER),'--background','--factory-startup','--disable-autoexec','--python-exit-code','1','--python',str(ROOT/'backend'/'blender_worker.py'),'--',str(task)],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,encoding='utf-8',errors='replace',creationflags=flags,cwd=work)
@@ -75,6 +96,10 @@ def run_job(job,payload,source=None):
                         found=shutil.which('ffmpeg')
                         if not found:raise ValueError('找不到首尾帧提取工具，请配置 PREVIS_FFMPEG 或将 FFmpeg 加入 PATH')
                         ffmpeg=Path(found)
+                    if payload.get('frameFolder'):
+                        command=[str(ffmpeg),'-v','error','-framerate',str(payload['project']['settings']['fps']),'-i',str(Path(payload['frameFolder'])/'%06d.png'),'-frames:v',str(job['frames']),'-c:v','libx264','-crf','18','-pix_fmt','yuv420p','-y',payload['video']]
+                        encoded=subprocess.run(command,capture_output=True,creationflags=flags)
+                        if encoded.returncode:raise ValueError('视频编码失败')
                     for index,key in ((0,'firstFrame'),(job['frames']-1,'lastFrame')):
                         path=Path(job['directory'])/(key+'.png')
                         proc=subprocess.run([str(ffmpeg),'-v','error','-i',payload['video'],'-vf',rf'select=eq(n\,{index})','-frames:v','1','-y',str(path)],capture_output=True,creationflags=flags)
@@ -86,15 +111,69 @@ def run_job(job,payload,source=None):
         except Exception as exc:job.update(state='error',message=str(exc),progress=0)
         finally:
             job.pop('process',None)
+            cache=job.pop('_temp',None)
+            if cache:cache.cleanup()
+            job.pop('_payload',None)
             if job['state']!='done' and payload.get('video'):
                 partial=Path(payload['video'])
                 if partial.exists():partial.unlink()
+
+def submit_video(payload):
+    p=payload['project'];errors=validate(p,True)
+    if errors:raise ValueError('\n'.join(errors))
+    browser_save=payload.pop('browserSave',False)
+    if not browser_save:
+        target,stamp=video_target(payload.pop('outputFile',None),payload.pop('overwrite',False))
+        if shutil.disk_usage(target.parent).free<128*1024**2:raise ValueError('输出磁盘空间不足')
+    ident=uuid.uuid4().hex;cache=tempfile.TemporaryDirectory(prefix='vantage-video-');work=Path(cache.name)
+    if browser_save:target,stamp=work/'result.mp4',None
+    payload.update(video=str(work/'encoded.mp4'),blend=str(work/'scene.blend'),frameFolder=str(work/'frames'))
+    Path(payload['frameFolder']).mkdir()
+    job={'id':ident,'state':'uploading' if payload['mode']=='preview' else 'queued','progress':0,'message':'正在准备视频','cancel':threading.Event(),'frames':len(payload['times']),'directory':str(target.parent),'outputFile':str(target),'files':{'video':str(target)},'downloads':{'video':'/api/downloads/'+ident+'/video/'+quote(target.name,safe='')},'_temp':cache,'_received':0,'_payload':payload,'_targetStamp':stamp,'_videoOnly':True,'_browserSave':browser_save}
+    JOBS[ident]=job
+    if payload['mode']=='render':threading.Thread(target=run_video_job,args=(job,payload),daemon=True).start()
+    return ident
+
+def run_video_job(job,payload):
+    try:
+        with GATE:
+            if job['cancel'].is_set():job['state']='cancelled';return
+            job.update(state='running',message='正在渲染视频' if payload['mode']=='render' else '正在编码视频',progress=80)
+            work=Path(job['_temp'].name);flags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0
+            if payload['mode']=='render':
+                if not BLENDER.is_file():raise ValueError('找不到 Blender 引擎')
+                task=work/'task.json';task.write_text(json.dumps(payload,ensure_ascii=False),encoding='utf-8')
+                process=subprocess.Popen([str(BLENDER),'--background','--factory-startup','--disable-autoexec','--python-exit-code','1','--python',str(ROOT/'backend'/'blender_worker.py'),'--',str(task)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=flags,cwd=work)
+                job['process']=process;code=process.wait();job.pop('process',None)
+                result_path=work/'result.json';answer=json.loads(result_path.read_text(encoding='utf-8')) if result_path.is_file() else {}
+                if not job['cancel'].is_set() and (code or answer.get('error')):raise ValueError(answer.get('error','光影渲染失败'))
+            if job['cancel'].is_set():job['state']='cancelled';return
+            ffmpeg=Path(os.environ.get('PREVIS_FFMPEG') or (ROOT.parent/'blender'/'tools'/'ffmpeg'/'ffmpeg.exe'))
+            if not ffmpeg.is_file():ffmpeg=shutil.which('ffmpeg')
+            if not ffmpeg:raise ValueError('找不到 FFmpeg 编码工具')
+            command=[str(ffmpeg),'-v','error','-framerate',str(payload['project']['settings']['fps']),'-i',str(Path(payload['frameFolder'])/'%06d.png'),'-frames:v',str(job['frames']),'-c:v','libx264','-crf','18','-pix_fmt','yuv420p','-movflags','+faststart','-y',payload['video']]
+            process=subprocess.Popen(command,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=flags);job['process']=process;code=process.wait();job.pop('process',None)
+            if job['cancel'].is_set():job['state']='cancelled';return
+            if code or not Path(payload['video']).is_file():raise ValueError('视频编码失败')
+            publish_video(payload['video'],Path(job['outputFile']),job['_targetStamp'],job['cancel'])
+            job.update(state='done',progress=100,message='视频已保存')
+    except Exception as exc:job.update(state='cancelled' if job['cancel'].is_set() else 'error',message=str(exc),progress=0)
+    finally:
+        job.pop('process',None);job.pop('_payload',None)
+        if job.get('_browserSave') and job['state']=='done':
+            timer=threading.Timer(1800,release_video,args=(job,));timer.daemon=True;timer.start()
+        else:release_video(job)
+
+def release_video(job):
+    cache=job.pop('_temp',None)
+    if cache:cache.cleanup()
+    if job.get('_browserSave'):job['files']={}
 
 def submit(payload,source=None):
     ident=uuid.uuid4().hex
     job={'id':ident,'state':'queued','progress':0,'message':'等待本地引擎','cancel':threading.Event(),'downloads':{}}
     if payload['mode'] not in ('import','convert'):
-        p=payload['project'];errors=validate(p,payload['mode']=='render')
+        p=payload['project'];errors=validate(p,payload['mode'] in ('render','preview'))
         if errors:raise ValueError('\n'.join(errors))
         destination=payload.pop('outputDirectory',None)
         if destination:
@@ -108,15 +187,18 @@ def submit(payload,source=None):
         folder=parent/(name+'_'+time.strftime('%Y%m%d_%H%M%S')+'_'+ident[:6]);folder.mkdir()
         model=folder/(name+'.previs');model.write_text(json.dumps(p,ensure_ascii=False),encoding='utf-8')
         payload['blend']=str(folder/(name+'.blend'))
-        if payload['mode']=='render':payload['video']=str(folder/(name+'.mp4'))
+        if payload['mode'] in ('render','preview'):payload['video']=str(folder/(name+'.mp4'))
         bundle=folder/(name+'.previs.zip');create_bundle(p,bundle,ROOT)
         files={'project':model,'bundle':bundle,'blend':Path(payload['blend'])}
         if payload.get('video'):
             files['video']=Path(payload['video']);files['firstFrame']=folder/'firstFrame.png';files['lastFrame']=folder/'lastFrame.png'
         job['files']={k:str(v) for k,v in files.items()}
         job['downloads']={k:'/api/downloads/'+ident+'/'+k+'/'+quote(v.name,safe='') for k,v in files.items()}
-        job['directory']=str(folder);job['frames']=max(1,round(p['settings']['fps']*p['settings']['duration']))
-    JOBS[ident]=job;threading.Thread(target=run_job,args=(job,payload,source),daemon=True).start()
+        job['directory']=str(folder);job['frames']=len(payload['times']) if payload.get('times') else max(1,round(p['settings']['fps']*p['settings']['duration']))
+    JOBS[ident]=job
+    if payload['mode']=='preview':
+        cache=tempfile.TemporaryDirectory(prefix='vantage-frames-');job['_temp']=cache;payload['frameFolder']=cache.name;job['_payload']=payload;job['_received']=0;job['state']='uploading'
+    else:threading.Thread(target=run_job,args=(job,payload,source),daemon=True).start()
     return ident
 
 class Handler(BaseHTTPRequestHandler):
@@ -136,10 +218,10 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/models':
             folder=ROOT/'model';folder.mkdir(exist_ok=True)
             self.json({'models':[{'name':p.name,'size':p.stat().st_size} for p in sorted(folder.glob('*.glb')) if p.resolve().is_relative_to(folder.resolve())]});return
-        if path=='/api/status':self.json({'app':'previs-local','version':APP_VERSION,'engineReady':BLENDER.is_file(),'token':TOKEN,'defaultOutputDirectory':str(PROJECTS.resolve())});return
+        if path=='/api/status':self.json({'app':'previs-local','version':APP_VERSION,'build':BUILD_ID,'apiVersion':1,'capabilities':CAPABILITIES,'pid':os.getpid(),'engineReady':BLENDER.is_file(),'token':TOKEN,'defaultOutputDirectory':str(PROJECTS.resolve())});return
         if path.startswith('/api/jobs/'):
             job=JOBS.get(path.rsplit('/',1)[-1])
-            self.json({k:v for k,v in job.items() if k not in ('process','cancel','files')} if job else {'error':'任务不存在'},200 if job else 404);return
+            self.json({k:v for k,v in job.items() if k not in ('process','cancel','files') and not k.startswith('_')} if job else {'error':'任务不存在'},200 if job else 404);return
         if path.startswith('/api/downloads/'):
             parts=path.split('/',5)
             if len(parts)!=6:self.json({'error':'下载链接无效'},404);return
@@ -149,6 +231,12 @@ class Handler(BaseHTTPRequestHandler):
         base=(ROOT/'model') if path.startswith('/models/') else (ROOT/'动作') if path.startswith('/motions/') else PROJECTS if path.startswith('/files/') else WEB
         relative=path[len('/models/'):] if path.startswith('/models/') else path[len('/motions/'):] if path.startswith('/motions/') else path[len('/files/'):]  if base==PROJECTS else path.lstrip('/') or 'index.html'
         target=(base/relative).resolve()
+        if base==WEB:
+            if not target.is_relative_to(WEB.resolve()):self.json({'error':'文件不存在'},404);return
+            key=target.relative_to(WEB.resolve()).as_posix();data=WEB_FILES.get(key)
+            if data is None:self.json({'error':'文件不存在'},404);return
+            mime='text/javascript' if target.suffix=='.js' else mimetypes.guess_type(key)[0] or 'application/octet-stream'
+            self.headers_out(200,mime,len(data));self.wfile.write(data);return
         if not target.is_relative_to(base.resolve()) or not target.is_file():self.json({'error':'文件不存在'},404);return
         self.send_file(target,attachment=path.startswith('/files/'))
     def send_file(self,target,attachment=False,inline=False):
@@ -230,19 +318,47 @@ class Handler(BaseHTTPRequestHandler):
                 if raw[:7]!=b'BLENDER' and raw[:2]!=b'\x1f\x8b' and raw[:4]!=b'\x28\xb5\x2f\xfd':raise ValueError('请选择有效的 .blend 文件')
                 job=submit({'mode':'import','sourceName':query.get('name',['静态场景'])[0],'snapshot':query.get('snapshot',['0'])[0]=='1','frame':int(query.get('frame',['1'])[0])},raw)
                 self.json({'job':job},202);return
+            if url.path.startswith('/api/preview-frame/'):
+                ident=url.path.rsplit('/',1)[-1];job=JOBS.get(ident)
+                if not job or job['state']!='uploading' or job['cancel'].is_set():raise ValueError('导出已取消或不存在')
+                if not raw.startswith(b'\x89PNG\r\n\x1a\n') or len(raw)<24:raise ValueError('无效 PNG 帧')
+                p=job['_payload']['project'];width,height=struct.unpack('>II',raw[16:24])
+                if (width,height)!=(p['settings']['width'],p['settings']['height']):raise ValueError('导出帧尺寸不一致')
+                index=job['_received']
+                if index>=job['frames']:raise ValueError('帧数超出范围')
+                (Path(job['_payload']['frameFolder'])/f'{index:06d}.png').write_bytes(raw);job['_received']+=1;job['progress']=int(80*job['_received']/job['frames'])
+                self.json({'received':job['_received']});return
             data=json.loads(raw)
             if url.path=='/api/models/import':
                 source=(ROOT/'model'/data['name']).resolve()
                 if source.parent!=(ROOT/'model').resolve() or source.suffix.lower()!='.glb' or not source.is_file():raise ValueError('模型不存在')
                 self.json({'job':submit({'mode':'import','source':str(source),'sourceName':source.stem,'glb':True,'snapshot':True})},202);return
+            if url.path in ('/api/choose-directory','/api/choose-video'):
+                answer=choose_path(ROOT,'video' if url.path.endswith('choose-video') else 'directory',data.get('name','Vantage.mp4'),data.get('directory',''))
+                self.json(answer);return
+            if url.path=='/api/video-release':
+                job=JOBS.get(data['job'])
+                if not job or not job.get('_browserSave') or job['state']!='done':raise ValueError('视频尚未完成')
+                release_video(job);self.json({'released':True});return
+            if url.path=='/api/preview-finish':
+                job=JOBS.get(data['job'])
+                if not job or job['state']!='uploading' or job['_received']!=job['frames']:raise ValueError('导出帧尚未上传完整')
+                job['state']='queued';threading.Thread(target=run_video_job if job.get('_videoOnly') else run_job,args=(job,job['_payload']),daemon=True).start();self.json({'job':data['job']});return
             if url.path in ('/api/save','/api/export'):
+                if url.path=='/api/export':
+                    times=export_times(data['project'],data.get('scope','all'),data.get('owner'),data.get('segment'))
+                    mode='render' if data.get('lighting',False) else 'preview'
+                    ident=submit_video({'mode':mode,'project':data['project'],'outputFile':data.get('outputFile'),'overwrite':data.get('overwrite') is True,'browserSave':data.get('browserSave') is True,'times':times})
+                    self.json({'job':ident,'times':times if mode=='preview' else None},202);return
                 self.json({'job':submit({'mode':'render' if url.path.endswith('export') else 'save','project':data['project'],'outputDirectory':data.get('outputDirectory')})},202);return
             if url.path=='/api/validate':self.json({'errors':validate(data['project'],data.get('export',False))});return
             if url.path.endswith('/cancel'):
                 job=JOBS.get(url.path.split('/')[-2])
-                if job and job['state'] in ('queued','running'):
+                if job and job['state'] in ('queued','running','uploading'):
                     job['cancel'].set();process=job.get('process')
                     if process and process.poll() is None:process.terminate()
+                    if job['state']=='uploading':
+                        job['state']='cancelled';job.pop('_temp').cleanup();job.pop('_payload',None)
                 self.json({'cancelled':True});return
             self.json({'error':'Unknown action'},404)
         except (ValueError,KeyError,TypeError,OSError) as exc:self.json({'error':str(exc)},400)
@@ -256,12 +372,12 @@ def main():
             except Exception:return None
         current=existing(port)
         if current and current.get('app')=='previs-local':
-            if current.get('version')==APP_VERSION:webbrowser.open(f'http://127.0.0.1:{port}');return
+            if current.get('version')==APP_VERSION and current.get('build')==BUILD_ID:webbrowser.open(f'http://127.0.0.1:{port}');return
             legacy_port=port
             # Keep the user's older session alive; reuse or start a newer server on another loopback port.
             for candidate in range(port+1,min(port+101,65536)):
                 found=existing(candidate)
-                if found and found.get('app')=='previs-local' and found.get('version')==APP_VERSION:
+                if found and found.get('app')=='previs-local' and found.get('version')==APP_VERSION and found.get('build')==BUILD_ID:
                     webbrowser.open(f'http://127.0.0.1:{candidate}/?legacyPort={legacy_port}');return
                 if found:continue
                 try:server=ThreadingHTTPServer(('127.0.0.1',candidate),Handler);port=candidate;break

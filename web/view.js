@@ -1,7 +1,8 @@
+import {pathMark} from './path_marks.js';
 import {gridLayout} from './grid_layout.js';
 import {applyModelMaterialFallback} from './model_material.js';
 import {validCameraState,finiteVector} from './camera_state.js';
-import {Evaluator,SegmentMotion,editObject,currentShot,units,edges,cameraQuaternion,followOwner} from './segments.js';
+import {Evaluator,SegmentMotion,editObject,currentShot,units,edges,cameraQuaternion,followOwner,shotEntries} from './segments.js';
 import {controlPoint,controlScale} from './camera_control.js';
 import * as THREE from 'three';
 import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
@@ -27,7 +28,7 @@ export function sceneGridMetrics(project,includeHidden=false){
 export class Viewport{
  constructor(container,preview,events){
   this.container=container;this.preview=preview;this.events=events;this.roots=new Map();this.motions=new Map();this.project=null;this.selected=null;this.nodeIndex=-1;this.view='TOP';this.tool='translate';this.editLayer='OBJECT';this.helpersOn=true;this.time=0;
-  this.scene=new THREE.Scene();this.scene.background=new THREE.Color('#131922');this.content=new THREE.Group();this.helpers=new THREE.Group();this.pathGroup=new THREE.Group();this.helpers.add(this.pathGroup);this.scene.add(this.content,this.helpers);
+  this.loadingManager=new THREE.LoadingManager();this.loadingManager.onStart=()=>this.assetsLoading=true;this.loadingManager.onLoad=()=>this.assetsLoading=false;this.loadingManager.onError=()=>this.assetError=true;this.scene=new THREE.Scene();this.scene.background=new THREE.Color('#131922');this.content=new THREE.Group();this.helpers=new THREE.Group();this.pathGroup=new THREE.Group();this.helpers.add(this.pathGroup);this.scene.add(this.content,this.helpers);
   this.scene.add(new THREE.HemisphereLight(0xeaf1ff,0x3e4248,2.6));const light=new THREE.DirectionalLight(0xffffff,3);light.position.set(4,-6,10);this.scene.add(light);const fill=new THREE.DirectionalLight(0xadc6e8,.8);fill.position.set(-5,2,3);this.scene.add(fill);
   this.renderer=new THREE.WebGLRenderer({antialias:true,alpha:false});this.renderer.setPixelRatio(Math.min(devicePixelRatio,2));this.renderer.outputColorSpace=THREE.SRGBColorSpace;container.appendChild(this.renderer.domElement);
   this.renderer.domElement.addEventListener('webglcontextlost',e=>{e.preventDefault();this.events.message?.('三维绘图连接已中断，正在等待浏览器恢复；这不是机位设置错误。');});this.renderer.domElement.addEventListener('webglcontextrestored',()=>this.events.message?.('三维绘图已恢复'));
@@ -51,7 +52,7 @@ export class Viewport{
  setProject(project){
   const structureKey=JSON.stringify(project.objects.map(o=>[o.id,o.role,o.modelSource,o.locatorColor,o.role==='ENV'?[o.position,o.rotation,o.scale,o.hidden]:null,(o.segments||[]).map(s=>[s.id,s.motion?.name]),(o.parts||[]).map(p=>[p.shape,p.topRatio,p.matrix,p.vertices?.length,p.triangles?.length])]).concat([project.settings.grid]));
   if(this.structureKey===structureKey){this.project=project;this.evaluator=new Evaluator(project);this.refreshPaths();this.update(this.time);this.resize();return;}
-  this.structureKey=structureKey;this.project=project;this.evaluator=new Evaluator(project);this.control.detach();this.disposeTree(this.content);this.roots.clear();this.motions.clear();this.disposeTree(this.helpers);this.pathGroup=new THREE.Group();this.helpers.add(this.pathGroup);
+  this.structureKey=structureKey;this.assetError=false;this.project=project;this.evaluator=new Evaluator(project);this.control.detach();this.disposeTree(this.content);this.roots.clear();this.motions.clear();this.disposeTree(this.helpers);this.pathGroup=new THREE.Group();this.helpers.add(this.pathGroup);
   const metrics=sceneGridMetrics(project),layout=gridLayout(metrics.bounds,project.settings.grid,metrics.ground);const grid=new THREE.GridHelper(layout.size,layout.divisions,0x394a5d,0x263342);grid.position.set(...layout.center);grid.material.transparent=true;grid.material.opacity=.35;grid.material.depthWrite=false;grid.userData.layout=layout;this.grid=grid;this.helpers.add(grid);this.orientGrid();
   const axes=new THREE.AxesHelper(1);axes.material.transparent=true;axes.material.opacity=.7;this.helpers.add(axes);
   for(const o of project.objects){let root;
@@ -70,14 +71,14 @@ export class Viewport{
    root.userData.objectId=o.id;this.roots.set(o.id,root);this.content.add(root);
    if(o.modelSource){
     const target=root,source=o.modelSource;
-    new GLTFLoader().load('/models/'+encodeURIComponent(source.name),gltf=>{
+    new GLTFLoader(this.loadingManager).load('/models/'+encodeURIComponent(source.name),gltf=>{
      if(this.roots.get(o.id)!==target){this.disposeTree(gltf.scene);return;}
      this.disposeTree(target);applyModelMaterialFallback(gltf);
      const converted=new THREE.Group();converted.rotation.x=Math.PI/2;converted.position.set(-source.center[0],-source.center[1],-source.center[2]);converted.add(gltf.scene);const calibrated=new THREE.Group();calibrated.rotation.z=source.localYaw||0;calibrated.add(converted);target.add(calibrated);
      gltf.scene.traverse(child=>{child.userData.objectId=o.id;});
      target.userData.mixer=new THREE.AnimationMixer(gltf.scene);target.userData.clips={};
      for(const name of new Set((o.segments||[]).map(s=>s.motion?.name).filter(Boolean))){
-      new GLTFLoader().load('/motions/'+encodeURIComponent(name),asset=>{
+      new GLTFLoader(this.loadingManager).load('/motions/'+encodeURIComponent(name),asset=>{
        if(this.roots.get(o.id)!==target){this.disposeTree(asset.scene);return;}
        if(asset.animations.length!==1){this.events.message?.('动作文件没有唯一动画片段',true);return;}
        target.userData.clips[name]=asset.animations[0];this.disposeTree(asset.scene);this.update(this.time);
@@ -92,9 +93,9 @@ export class Viewport{
   }
   this.refreshPaths();this.update(this.time);this.select(this.selected,this.nodeIndex);this.resize();
  }
- refreshPaths(){if(!this.project)return;this.disposeTree(this.pathGroup);
+ refreshPaths(){if(!this.project)return;this.disposeTree(this.pathGroup);const configured=new Set(shotEntries(this.project).map(e=>e.owner.id+':'+e.unit.id));
   for(const source of this.project.objects){const o=editObject(this.project,source);if(o.hidden)continue;const motion=new SegmentMotion(o);
-   motion.segments.forEach((s,i)=>{const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints(motion.arcs[i].points.map(vec)),new (this.editLayer==='CAMERA'?THREE.LineDashedMaterial:THREE.LineBasicMaterial)({...(this.editLayer==='CAMERA'?{dashSize:.15,gapSize:.1}:{}),color:s.id===this.segmentId?0xc3ef88:0xe7b86a,depthTest:false}));line.computeLineDistances();line.userData={objectId:o.id,segmentId:s.id};line.renderOrder=3;this.pathGroup.add(line);});
+   motion.segments.forEach((s,i)=>{const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints(motion.arcs[i].points.map(vec)),new (this.editLayer==='CAMERA'?THREE.LineDashedMaterial:THREE.LineBasicMaterial)({...(this.editLayer==='CAMERA'?{dashSize:.15,gapSize:.1}:{}),color:s.id===this.segmentId?0xc3ef88:0xe7b86a,depthTest:false}));line.computeLineDistances();const marked=configured.has(o.id+':'+s.id);line.userData={objectId:o.id,segmentId:s.id,shotConfigured:marked};if(marked)line.material.color.set(s.id===this.segmentId?0xc3ef88:0x52d8ef);line.renderOrder=3;this.pathGroup.add(line);if(marked){const mark=pathMark(motion.arcs[i].points,s.id===this.segmentId?0xc3ef88:0x52d8ef);mark.userData={objectId:o.id,segmentId:s.id,shotMark:true};this.pathGroup.add(mark);}});
    o.nodes?.forEach((n,i)=>{const dot=new THREE.Mesh(new THREE.SphereGeometry(i===this.nodeIndex&&o.id===this.selected?.075:.06,12,8),new THREE.MeshBasicMaterial({color:i===this.nodeIndex&&o.id===this.selected?0xc3ef88:0xe7b86a}));dot.position.fromArray(n.position);dot.userData={node:i,objectId:o.id};this.pathGroup.add(dot);});
   }
  }
@@ -150,6 +151,12 @@ export class Viewport{
    if(root.userData.focus){guide.sight.geometry.setFromPoints([root.position,vec(root.userData.focus)]);guide.sight.computeLineDistances();}
    guide.group.visible=true;
   }catch{ /* Invalid shot settings stay editable; the inspector reports the conflict. */ }
+ }
+ async exportFrame(t){
+  if(this.previewRenderer.getContext().isContextLost())throw Error('预览绘图连接已中断，请恢复后再导出');
+  const until=Date.now()+60000;while(this.assetsLoading){if(Date.now()>until)throw Error('模型或动作加载超时');await new Promise(r=>setTimeout(r,100));}if(this.assetError)throw Error('模型或动作未完整加载，无法导出');
+  this.update(t);this.previewRenderer.setPixelRatio(1);this.previewRenderer.setSize(this.project.settings.width,this.project.settings.height);this.render();
+  const encoded=this.previewRenderer.domElement.toDataURL('image/png').split(',')[1];const bytes=Uint8Array.from(atob(encoded),c=>c.charCodeAt(0));return new Blob([bytes],{type:'image/png'});
  }
  render(){
   if(!this.project)return;const helper=this.control.getHelper();
