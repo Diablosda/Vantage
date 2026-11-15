@@ -31,7 +31,7 @@ flowchart LR
 
 约 44 秒，展示推拉、环绕、模型与路径编辑、参数控制以及保存导出。
 
-https://github.com/user-attachments/assets/c5873f74-c585-422b-b920-1105b596ee9f
+https://github.com/user-attachments/assets/3e505bb6-6474-4a8e-bfb9-e03036ed7c4c
 
 ## 使用流程与功能
 
