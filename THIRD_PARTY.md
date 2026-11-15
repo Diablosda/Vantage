@@ -8,6 +8,6 @@ The offline installer includes unmodified Blender 5.2.2 LTS (Windows x64), its e
 - Three.js: MIT, license retained in web/vendor/three/LICENSE.
 - NSIS 3.13 installer builder: https://nsis.sourceforge.io/Docs/AppendixI.html (zlib/libpng and component-specific licenses). No installer-builder dependency is needed on the user's machine.
 
-Matching Blender and FFmpeg main source archives and the source/build references accompany the private release for inspection. The application source is provided in the same private repository; this file does not change the ownership or separately grant a new license to Vantage code. Before broader redistribution, the distributor must review the applicable terms for Blender-integrated modules and all linked third-party components.
+Matching Blender and FFmpeg main source archives and the source/build references accompany the release for inspection. The application source is provided in the public Vantage repository; this file does not change the ownership or separately grant a new license to Vantage code. Redistribution must comply with the applicable terms for Blender-integrated modules and all linked third-party components, including their corresponding-source requirements.
 
 No personal models, scenes, motion files, projects, credentials, or Blender portable preferences are part of the installer. Uninstallation keeps user data and cache outside the installation folder.
