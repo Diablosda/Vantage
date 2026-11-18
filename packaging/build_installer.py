@@ -7,18 +7,31 @@ def copytree(source,target):
  shutil.copytree(source,target,ignore=shutil.ignore_patterns('__pycache__','*.pyc','*.pyo','portable'),dirs_exist_ok=True)
 
 def main():
- parser=argparse.ArgumentParser();parser.add_argument('--work',type=Path,required=True);parser.add_argument('--refresh-app',action='store_true');args=parser.parse_args();work=args.work.resolve()
+ parser=argparse.ArgumentParser();parser.add_argument('--work',type=Path,required=True);parser.add_argument('--refresh-app',action='store_true');parser.add_argument('--reuse-runtime',nargs=2,type=Path,metavar=('INSTALLATION','MANIFEST'));args=parser.parse_args();work=args.work.resolve()
  version=re.search(r"APP_VERSION='([^']+)'",(ROOT/'server.py').read_text(encoding='utf-8')).group(1)
  components=json.loads((ROOT/'packaging/components.json').read_text(encoding='utf-8'))
- for key,name in [('blender','blender.zip'),('ffmpeg','ffmpeg.zip'),('nsis','nsis.zip')]:assert hashlib.sha256((work/name).read_bytes()).hexdigest()==components[key]['sha256'],name
+ if args.reuse_runtime:
+  previous,manifest=args.reuse_runtime
+  expected={f['path']:f['sha256'] for f in json.loads(manifest.read_text(encoding='utf-8'))['files'] if f['path'].startswith('runtime/')}
+  actual={}
+  for path in (previous/'runtime').rglob('*'):
+   if path.is_file():
+    with path.open('rb') as stream:actual[path.relative_to(previous).as_posix()]=hashlib.file_digest(stream,'sha256').hexdigest()
+  if not expected or actual!=expected:raise ValueError('Previous runtime does not match the release manifest')
+ for key in (('nsis',) if args.reuse_runtime else ('blender','ffmpeg','nsis')):
+  with (work/(key+'.zip')).open('rb') as stream:digest=hashlib.file_digest(stream,'sha256').hexdigest()
+  if digest!=components[key]['sha256']:raise ValueError('Upstream archive failed verification: '+key)
  stage=work/'stage'
  if stage.exists() and not (args.refresh_app and (stage/'.vantage-installation').is_file()):raise SystemExit('Stage already exists: choose a fresh build work directory')
  stage.mkdir(parents=True,exist_ok=True)
  for folder in ['ai_previs','backend','web','launcher']:copytree(ROOT/folder,stage/folder)
  for name in ['server.py','Vantage.exe','Vantage.Dialogs.exe','Vantage.cmd','README.md','产品说明.md','THIRD_PARTY.md']:shutil.copy2(ROOT/name,stage/name)
- copytree(next((work/'blender').iterdir()),stage/'runtime'/'blender')
- ffmpeg=next((work/'ffmpeg').iterdir());(stage/'runtime'/'ffmpeg').mkdir(parents=True,exist_ok=True)
- for src,name in [(ffmpeg/'bin'/'ffmpeg.exe','ffmpeg.exe'),(ffmpeg/'LICENSE','LICENSE'),(ffmpeg/'README.txt','README.txt')]:shutil.copy2(src,stage/'runtime'/'ffmpeg'/name)
+ if args.reuse_runtime:
+  copytree(previous/'runtime',stage/'runtime')
+ else:
+  copytree(next((work/'blender').iterdir()),stage/'runtime'/'blender')
+  ffmpeg=next((work/'ffmpeg').iterdir());(stage/'runtime'/'ffmpeg').mkdir(parents=True,exist_ok=True)
+  for src,name in [(ffmpeg/'bin'/'ffmpeg.exe','ffmpeg.exe'),(ffmpeg/'LICENSE','LICENSE'),(ffmpeg/'README.txt','README.txt')]:shutil.copy2(src,stage/'runtime'/'ffmpeg'/name)
  # Confirm the runtime has no user-created data or loose local machine paths.
  for name in ['model','场景','动作','projects','.runtime','.git']:assert not (stage/name).exists(),name
  assert not (stage/'runtime'/'blender'/'portable').exists()

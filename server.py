@@ -29,7 +29,7 @@ from backend.portable import create_bundle, read_bundle, MAX_ARCHIVE
 ROOT=Path(__file__).resolve().parent
 WEB=ROOT/'web';DATA=data_root();PROJECTS=DATA/'Projects';RUNTIME=cache_root()/'Jobs'
 BLENDER=blender_path()
-TOKEN=secrets.token_urlsafe(32);JOBS={};GATE=threading.Semaphore(1);APP_VERSION='2.1.2'
+TOKEN=secrets.token_urlsafe(32);JOBS={};GATE=threading.Semaphore(1);APP_VERSION='2.1.3'
 MAX_BODY=128*1024**2
 
 # Capture one frontend release per running process, so updating files cannot mix
