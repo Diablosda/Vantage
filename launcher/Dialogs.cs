@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -38,6 +38,16 @@ internal static class Dialogs {
                         if(dialog.ShowDialog(owner)==DialogResult.OK) {
                             answer["cancelled"]=false; answer["outputFile"]=dialog.FileName;
                             answer["overwrite"]=File.Exists(dialog.FileName);
+                        }
+                    }
+                } else if(kind=="project") {
+                    using(var dialog=new OpenFileDialog()) {
+                        dialog.Title="Vantage · 打开工程";
+                        dialog.Filter="Vantage 工程 (*.previs;*.zip;*.blend)|*.previs;*.zip;*.blend";
+                        dialog.RestoreDirectory=true;
+                        if(Directory.Exists(directory)) dialog.InitialDirectory=directory;
+                        if(dialog.ShowDialog(owner)==DialogResult.OK) {
+                            answer["cancelled"]=false; answer["file"]=dialog.FileName;
                         }
                     }
                 } else if(kind=="directory") {

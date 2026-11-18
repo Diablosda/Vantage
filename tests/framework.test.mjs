@@ -64,3 +64,35 @@ from backend.segments import Evaluator,shot_range
 p=json.load(sys.stdin);assert not validate(p,True),validate(p,True);assert shot_range(p)==(0,10)
 e=Evaluator(p);print(json.dumps([e.camera(e.objects['c'],t)['position'] for t in [0,1,2,2.5,3,4.9]]))`],{input:JSON.stringify(p),encoding:'utf8'});assert.equal(r.status,0,r.stderr);assert.deepEqual(JSON.parse(r.stdout),[positions[0],positions[0],positions[1],positions[1],positions[2],positions[2]]);
 });
+
+test('free aim uses shot-local time and turns the camera independently of its path and lens',()=>{
+ const {p,a,c}=fixture(),sid=a.segments[1].id,cfg=configureShot(p,c,a,sid,'FREE');
+ appendPoint(cfg.freeMotion,[10,-8,5]);
+ cfg.freeMotion.angles=[{time:0,rotation:[0,0,0]}];
+ cfg.lensEnd=80;
+ const original=new Evaluator(p).camera(c,3,sid);
+ cfg.aimMotion={position:[0,0,1],nodes:[],segments:[],speed:1};
+ appendPoint(cfg.aimMotion,[2,0,1]);
+ const samples=[2,3,4].map(t=>new Evaluator(p).camera(c,t,sid));
+ assert.deepEqual(samples.map(s=>s.focus),[[0,0,1],[1,0,1],[2,0,1]]);
+ assert.deepEqual(samples[1].position,original.position);
+ assert.equal(samples[1].lens,original.lens);
+ for(const state of samples){
+  const [x,y,z,w]=state.cameraRotation;
+  const forward=[-2*(x*z+w*y),-2*(y*z-w*x),2*(x*x+y*y)-1];
+  const sight=state.focus.map((n,i)=>n-state.position[i]),length=Math.hypot(...sight);
+  forward.forEach((v,i)=>assert.ok(Math.abs(v-sight[i]/length)<1e-7));
+ }
+ const result=spawnSync('python',['-c',`import json,sys
+from backend.model import validate
+from backend.segments import Evaluator
+p=json.load(sys.stdin);assert not validate(p,True),validate(p,True)
+e=Evaluator(p);print(json.dumps([e.camera(e.objects['c'],t) for t in [2,3,4]]))`],{input:JSON.stringify(p),encoding:'utf8'});
+ assert.equal(result.status,0,result.stderr);
+ JSON.parse(result.stdout).forEach((s,i)=>{assert.deepEqual(s.focus,samples[i].focus);s.cameraRotation.forEach((v,j)=>assert.ok(Math.abs(v-samples[i].cameraRotation[j])<1e-7));});
+ const inherited=configureShot(p,c,a,a.segments[0].id,'FREE',true);
+ assert.deepEqual(inherited.aimMotion.nodes[0].position,samples[2].focus);
+ assert.deepEqual(cfg.aimMotion.nodes[0].position,[0,0,1]);
+ cfg.aimMotion.nodes=[];cfg.aimMotion.segments=[];
+ assert.deepEqual(new Evaluator(p).camera(c,3,sid),original);
+});

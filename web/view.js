@@ -2,7 +2,7 @@ import {pathMark} from './path_marks.js';
 import {gridLayout} from './grid_layout.js';
 import {applyModelMaterialFallback} from './model_material.js';
 import {validCameraState,finiteVector} from './camera_state.js';
-import {Evaluator,SegmentMotion,editObject,currentShot,units,edges,cameraQuaternion,followOwner,shotEntries} from './segments.js';
+import {Evaluator,SegmentMotion,editObject,freeAimShot,currentShot,units,edges,cameraQuaternion,followOwner,shotEntries} from './segments.js';
 import {controlPoint,controlScale} from './camera_control.js';
 import * as THREE from 'three';
 import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
@@ -95,21 +95,22 @@ export class Viewport{
  }
  refreshPaths(){if(!this.project)return;this.disposeTree(this.pathGroup);const configured=new Set(shotEntries(this.project).map(e=>e.owner.id+':'+e.unit.id));
   for(const source of this.project.objects){const o=editObject(this.project,source);if(o.hidden)continue;const motion=new SegmentMotion(o);
-   motion.segments.forEach((s,i)=>{const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints(motion.arcs[i].points.map(vec)),new (this.editLayer==='CAMERA'?THREE.LineDashedMaterial:THREE.LineBasicMaterial)({...(this.editLayer==='CAMERA'?{dashSize:.15,gapSize:.1}:{}),color:s.id===this.segmentId?0xc3ef88:0xe7b86a,depthTest:false}));line.computeLineDistances();const marked=configured.has(o.id+':'+s.id);line.userData={objectId:o.id,segmentId:s.id,shotConfigured:marked};if(marked)line.material.color.set(s.id===this.segmentId?0xc3ef88:0x52d8ef);line.renderOrder=3;this.pathGroup.add(line);if(marked){const mark=pathMark(motion.arcs[i].points,s.id===this.segmentId?0xc3ef88:0x52d8ef);mark.userData={objectId:o.id,segmentId:s.id,shotMark:true};this.pathGroup.add(mark);}});
+   motion.segments.forEach((s,i)=>{const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints(motion.arcs[i].points.map(vec)),new (this.editLayer==='CAMERA'?THREE.LineDashedMaterial:THREE.LineBasicMaterial)({...(this.editLayer==='CAMERA'?{dashSize:.15,gapSize:.1}:{}),color:s.id===this.segmentId?0xc3ef88:o.role==='TARGET'?0x91cfff:0xe7b86a,depthTest:false}));line.computeLineDistances();const marked=configured.has(o.id+':'+s.id);line.userData={objectId:o.id,segmentId:s.id,shotConfigured:marked};if(marked)line.material.color.set(s.id===this.segmentId?0xc3ef88:0x52d8ef);line.renderOrder=3;this.pathGroup.add(line);if(marked){const mark=pathMark(motion.arcs[i].points,s.id===this.segmentId?0xc3ef88:0x52d8ef);mark.userData={objectId:o.id,segmentId:s.id,shotMark:true};this.pathGroup.add(mark);}});
    o.nodes?.forEach((n,i)=>{const dot=new THREE.Mesh(new THREE.SphereGeometry(i===this.nodeIndex&&o.id===this.selected?.075:.06,12,8),new THREE.MeshBasicMaterial({color:i===this.nodeIndex&&o.id===this.selected?0xc3ef88:0xe7b86a}));dot.position.fromArray(n.position);dot.userData={node:i,objectId:o.id};this.pathGroup.add(dot);});
   }
  }
  contextMenu(e){e.preventDefault();if(this.editLayer==='CAMERA')return;if(this.pointer&&Math.hypot(e.clientX-this.pointer[0],e.clientY-this.pointer[1])>5)return;this.rayFromPointer(e);this.ray.params.Line.threshold=this.camera.isOrthographicCamera?.1/this.camera.zoom:.12;const hits=this.ray.intersectObjects(this.pathGroup.children,false).filter(h=>h.object.userData.segmentId||this.project.objects.find(o=>o.id===h.object.userData.objectId)?.nodes[h.object.userData.node]?.dwell>0);if(hits.length){const d=hits[0].object.userData;this.events.segment?.(d.objectId,d.segmentId||this.project.objects.find(o=>o.id===d.objectId).nodes[d.node].id,e.clientX,e.clientY);return;}const objects=this.ray.intersectObjects(this.content.children,true).filter(h=>{const data=this.project.objects.find(o=>o.id===h.object.userData.objectId);return data&&!data.hidden&&data.role!=='ENV';});if(objects.length){this.events.objectMenu?.(objects[0].object.userData.objectId,e.clientX,e.clientY);return;}const point=this.ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,0,1),0),new THREE.Vector3());if(point)this.events.emptyMenu?.(point.toArray(),e.clientX,e.clientY);else this.events.message?.('请在俯视或自由视图选择地面位置');}
 
  select(id,nodeIndex=-1){this.selected=id;this.nodeIndex=nodeIndex;this.control.detach();const data=editObject(this.project,this.project?.objects.find(o=>o.id===id)),root=this.roots.get(id);
+  this.control.setTranslationSnap(data?.role==='ENV'&&this.project.settings.snap?this.project.settings.grid:null);
   if(data?.role==='CAMERA'&&data.viewMode==='LOCK'&&!this.startEdit){const target=this.project.objects.find(o=>o.id===data.target),owner=this.project.objects.find(o=>o.id===target?.follow);if(owner){const ss=edges(owner),i=ss.findIndex(s=>this.time>=s.startTime&&this.time<s.endTime);if(i>0&&data.shots?.[ss[i].id]?.controlVersion!==3&&data.shots?.[ss[i].id]?.inherit)return;}}
   if(this.editLayer==='CAMERA'&&data&&!['CAMERA','TARGET'].includes(data.role))return;if(this.editLayer==='OBJECT'&&currentShot(this.project)&&['CAMERA','TARGET'].includes(data?.role))return;
-  if(this.startEdit?.camera===id){if(this.startEdit.locked)return;this.handle.position.fromArray(this.startEdit.position);const cfg=currentShot(this.project)?.cfg;this.handle.quaternion.fromArray(cfg?.start.quaternion||[0,0,0,1]);this.control.attach(this.handle);this.control.setMode(this.tool==='rotate'?'rotate':'translate');return;}
-  if(!root||!data||data.locked||data.hidden||this.tool==='path'||this.tool==='select')return;
+  if(this.tool==='select')return;
+  if(this.startEdit?.camera===id){if(this.startEdit.locked||data?.locked||data?.hidden)return;this.control.showX=true;this.control.showY=true;this.control.showZ=!data.lockZ||this.tool==='rotate';this.handle.position.fromArray(this.startEdit.position);const cfg=currentShot(this.project)?.cfg;this.handle.quaternion.fromArray(cfg?.start.quaternion||[0,0,0,1]);this.control.attach(this.handle);this.control.setMode(this.tool==='rotate'?'rotate':'translate');return;}
+  if(!root||!data||data.locked||data.hidden||this.tool==='path')return;
   if(this.tool==='translate'&&data.nodes?.length){this.nodeIndex=Math.max(0,Math.min(nodeIndex,data.nodes.length-1));this.handle.position.fromArray(data.nodes[this.nodeIndex].position);this.handle.quaternion.identity();this.control.attach(this.handle);}
   else{this.nodeIndex=-1;if(data.role==='TARGET'&&this.controlCamera(id)&&this.tool==='translate'){this.handle.position.copy(root.userData.icon.position);this.handle.quaternion.identity();this.control.attach(this.handle);}else this.control.attach(root);}
   this.control.setMode(this.tool==='orbit'?'rotate':this.tool);this.control.showZ=!(data.lockZ&&this.tool==='translate');this.control.showX=true;this.control.showY=true;
-  this.control.setTranslationSnap(this.project.settings.snap?this.project.settings.grid:null);
   if(this.tool==='orbit'&&data.role==='CAMERA'&&data.target){const t=this.roots.get(data.target);if(t){this.handle.position.copy(t.position);this.handle.quaternion.identity();this.control.attach(this.handle);this.control.showX=false;this.control.showY=false;this.control.showZ=true;}}
  }
  setTool(tool){this.tool=tool;this.select(this.selected,this.nodeIndex);}
@@ -120,8 +121,8 @@ export class Viewport{
  focus(id){const root=this.roots.get(id);let center=new THREE.Vector3(),size=7;if(root){const box=new THREE.Box3().setFromObject(root);if(!box.isEmpty()){center=box.getCenter(center);size=Math.max(3,box.getSize(new THREE.Vector3()).length()*1.8);}else{center.copy(root.userData.icon?.position||root.position);if(root.userData.controlLink){const c=this.controlCamera(id),cr=this.roots.get(c?.id);if(cr){size=Math.max(5,cr.position.distanceTo(center)*1.5);center.add(cr.position).multiplyScalar(.5);}}}}const delta=center.clone().sub(this.orbit.target);this.camera.position.add(delta);if(this.view==='FREE'){const direction=this.camera.position.clone().sub(center).normalize();this.camera.position.copy(center).addScaledVector(direction,size*1.5);}this.orbit.target.copy(center);this.ortho.zoom=12/size;this.ortho.updateProjectionMatrix();this.orbit.update();}
  resize(){const w=Math.max(1,this.container.clientWidth),h=Math.max(1,this.container.clientHeight);this.renderer.setSize(w,h,false);this.referenceAspect??=w/h;const fit=Math.max(1,this.referenceAspect/(w/h));this.ortho.left=-6*w/h*fit;this.ortho.right=6*w/h*fit;this.ortho.top=6*fit;this.ortho.bottom=-6*fit;this.perspective.fov=THREE.MathUtils.radToDeg(2*Math.atan(Math.tan(THREE.MathUtils.degToRad(45/2))*fit));this.ortho.updateProjectionMatrix();this.perspective.aspect=w/h;this.perspective.updateProjectionMatrix();const ratio=(this.project?.settings.width||1280)/(this.project?.settings.height||720);let pw=this.preview.clientWidth,ph=this.preview.clientHeight;if(pw/ph>ratio)pw=ph*ratio;else ph=pw/ratio;this.previewRenderer.setSize(Math.max(1,pw),Math.max(1,ph),false);this.previewRenderer.domElement.style.width=`${pw}px`;this.previewRenderer.domElement.style.height=`${ph}px`;}
  update(time){this.time=time;if(!this.project)return;this.warning='';
-  for(const o of this.project.objects){const root=this.roots.get(o.id);if(!root)continue;if(this.dragging&&this.control.object===root)continue;
-   try{const state=o.role==='CAMERA'?this.evaluator.camera(o,time,this.previewSegment):this.evaluator.pose(o,time);if(o.role==='CAMERA')validCameraState(state);const rotation=o.role==='CAMERA'?cameraQuaternion(state):state.quaternion;if(!finiteVector(state.position)||!finiteVector(rotation,4))throw Error('对象变换无效');root.position.fromArray(state.position);root.quaternion.fromArray(rotation);if(state.warning)this.warning=state.warning;root.scale.fromArray(o.scale);root.visible=!o.hidden;
+  for(const o of this.project.objects){const root=this.roots.get(o.id);if(!root)continue;const held=this.dragging&&this.control.object===root;
+   try{const state=o.role==='CAMERA'?this.evaluator.camera(o,time,this.previewSegment):this.evaluator.pose(o,time);if(o.role==='CAMERA')validCameraState(state);const rotation=o.role==='CAMERA'?cameraQuaternion(state):state.quaternion;if(!finiteVector(state.position)||!finiteVector(rotation,4))throw Error('对象变换无效');if(!held){root.position.fromArray(state.position);root.quaternion.fromArray(rotation);}if(state.warning)this.warning=state.warning;root.scale.fromArray(o.scale);root.visible=!o.hidden;
     if(o.role==='CAMERA'){root.userData.lastValid=state;root.userData.currentLens=state.lens;root.userData.focus=state.focus;const ratio=this.project.settings.width/this.project.settings.height;root.aspect=ratio;root.fov=THREE.MathUtils.radToDeg(2*Math.atan(36/(2*state.lens*ratio)));root.updateProjectionMatrix();}
    }catch(e){this.warning=e.message;if(o.role==='CAMERA'&&this.startEdit?.camera===o.id)root.position.fromArray(this.startEdit.position);}
    const mixer=root.userData.mixer;if(mixer){const seg=edges(o).find(s=>s.motion&&time>=s.startTime&&time<s.endTime),clip=seg&&root.userData.clips?.[seg.motion.name];const key=clip?seg.id:null;if(root.userData.motionKey!==key){mixer.stopAllAction();root.userData.motionKey=key;if(clip)mixer.clipAction(clip).reset().play();}if(clip)mixer.setTime((time-seg.startTime)%clip.duration);}
@@ -133,10 +134,11 @@ export class Viewport{
   for(const o of this.project.objects.filter(o=>o.role==='TARGET')){
    const c=this.controlCamera(o.id),root=this.roots.get(o.id);if(!c)continue;const cr=this.roots.get(c.id),forward=vec([0,0,-1]).applyQuaternion(cr.quaternion),aim=c.viewMode==='FREE'?cr.position.clone().add(forward):(cr.userData.focus?vec(cr.userData.focus):root.position);
    const lens=cr.userData.currentLens??keyValue(c.lenses||[],time,c.lens||50),scale=c.controlScale||controlScale(cr.position.distanceTo(root.position),lens);
-   root.userData.icon.position.fromArray(controlPoint(cr.position.toArray(),aim.toArray(),lens,scale,forward.toArray()));
+   if(cr.userData.lastValid?.aimPath)root.userData.icon.position.fromArray(cr.userData.focus);
+   else root.userData.icon.position.fromArray(controlPoint(cr.position.toArray(),aim.toArray(),lens,scale,forward.toArray()));
    const pixelWorld=this.camera.isOrthographicCamera?(this.camera.top-this.camera.bottom)/this.camera.zoom/Math.max(1,this.container.clientHeight):2*this.camera.position.distanceTo(root.userData.icon.position)*Math.tan(THREE.MathUtils.degToRad(this.camera.fov/2))/Math.max(1,this.container.clientHeight);root.userData.icon.scale.setScalar(Math.max(.5,pixelWorld*8/.18));
    const link=root.userData.controlLink;link.geometry.setFromPoints([cr.position,root.userData.icon.position]);link.computeLineDistances();link.visible=!o.hidden&&!c.hidden;
-   if(this.selected===o.id&&this.control.object===this.handle&&this.tool==='translate'&&!o.nodes?.length&&!this.dragging&&!this.targetDrag)this.handle.position.copy(root.userData.icon.position);
+   if(this.selected===o.id&&this.control.object===this.handle&&this.tool==='translate'&&!editObject(this.project,o).nodes?.length&&!this.dragging&&!this.targetDrag)this.handle.position.copy(root.userData.icon.position);
   }
  }
  updateShotGuide(c,time){
@@ -158,10 +160,77 @@ export class Viewport{
   this.update(t);this.previewRenderer.setPixelRatio(1);this.previewRenderer.setSize(this.project.settings.width,this.project.settings.height);this.render();
   const encoded=this.previewRenderer.domElement.toDataURL('image/png').split(',')[1];const bytes=Uint8Array.from(atob(encoded),c=>c.charCodeAt(0));return new Blob([bytes],{type:'image/png'});
  }
+ editBackgroundMaterial(original){
+  this.editMaterialCache??=new WeakMap();
+  let faded=this.editMaterialCache.get(original);
+  if(!faded){
+   faded=original.clone();
+   faded.transparent=true;
+   faded.depthWrite=false;
+   faded.opacity=Math.min(original.opacity,.09);
+   this.editMaterialCache.set(original,faded);
+   const release=()=>{
+    faded.dispose();
+    this.editMaterialCache.delete(original);
+    original.removeEventListener('dispose',release);
+   };
+   original.addEventListener('dispose',release);
+  }
+  return faded;
+ }
+ editDepth(direction){
+  const owner=this.project.objects.find(o=>o.id===this.selected);
+  if(!owner||owner.hidden||owner.locked||owner.role==='ENV')return null;
+  if(this.tool==='path'){
+   if(this.view==='FREE'||editObject(this.project,owner).follow)return null;
+   if(this.editLayer==='CAMERA'&&!(owner.role==='CAMERA'&&currentShot(this.project)?.cfg.mode==='FREE')&&!freeAimShot(this.project,owner.id))return null;
+   const data=editObject(this.project,owner);
+   return direction.dot(vec(data.nodes?.at(-1)?.position||data.position));
+  }
+  const root=this.roots.get(owner.id);
+  if(this.targetDrag)return direction.dot(root.userData.icon.position);
+  if(!this.control.object||!['translate','rotate','orbit'].includes(this.tool))return null;
+  const depth=direction.dot(this.control.object.position);
+  if(this.tool==='orbit')return Math.max(depth,direction.dot(root.position));
+  if(owner.role==='TARGET'&&root.userData.icon)return Math.max(depth,direction.dot(root.userData.icon.position));
+  return depth;
+ }
+ drawWorkspace(draw){
+  this.fadedMeshes??=new Set();
+  this.fadedMeshes.clear();
+  const direction=this.camera.getWorldDirection(new THREE.Vector3());
+  const depth=this.editDepth(direction);
+  if(depth===null){draw();return;}
+  const bounds=new THREE.Box3(),nearest=new THREE.Vector3(),originals=new Map();
+  try{
+   for(const data of this.project.objects){
+    if(data.role!=='ENV'||data.hidden)continue;
+    const root=this.roots.get(data.id);
+    if(!root?.visible)continue;
+    root.updateWorldMatrix(true,true);
+    root.traverseVisible(mesh=>{
+     if(!mesh.isMesh)return;
+     const geometry=mesh.geometry;
+     if(!geometry.boundingBox)geometry.computeBoundingBox();
+     bounds.copy(geometry.boundingBox).applyMatrix4(mesh.matrixWorld);
+     nearest.set(direction.x>=0?bounds.min.x:bounds.max.x,
+      direction.y>=0?bounds.min.y:bounds.max.y,direction.z>=0?bounds.min.z:bounds.max.z);
+     if(direction.dot(nearest)>=depth-1e-5) return;
+     this.fadedMeshes.add(mesh);
+     const material=mesh.material;
+     originals.set(mesh,material);
+     mesh.material=Array.isArray(material)?material.map(m=>this.editBackgroundMaterial(m)):this.editBackgroundMaterial(material);
+    });
+   }
+   draw();
+  }finally{
+   for(const [mesh,material] of originals)mesh.material=material;
+  }
+ }
  render(){
   if(!this.project)return;const helper=this.control.getHelper();
   const draw=(renderer,camera,label)=>{try{if(!renderer.getContext().isContextLost())renderer.render(this.scene,camera);this.renderErrors??={};delete this.renderErrors[label];}catch(e){this.renderErrors??={};if(this.renderErrors[label]!==e.message){console.error(label,e);this.events.message?.(label+'：'+e.message,true);this.renderErrors[label]=e.message;}}};
-  try{this.helpers.visible=this.helpersOn;helper.visible=!!this.control.object;this.scene.background.set('#131922');draw(this.renderer,this.camera,'工作区渲染失败');
+  try{this.helpers.visible=this.helpersOn;helper.visible=!!this.control.object;this.scene.background.set('#131922');this.drawWorkspace(()=>draw(this.renderer,this.camera,'工作区渲染失败'));
    const camera=this.roots.get(this.project.activeCamera);this.helpers.visible=false;helper.visible=false;this.scene.background.set('#343b44');if(camera?.isCamera)draw(this.previewRenderer,camera,'摄影机预览失败');else this.previewRenderer.clear();
   }finally{this.helpers.visible=this.helpersOn;helper.visible=!!this.control.object;}
  }
@@ -173,7 +242,7 @@ export class Viewport{
   const hits=this.ray.intersectObjects(targets.map(o=>this.roots.get(o.id).userData.icon),false);
   if(!hits.length)return;
   const data=targets.find(o=>o.id===hits[0].object.userData.objectId);
-  if(data.nodes?.length)return;
+  if(editObject(this.project,data).nodes?.length)return;
   if(this.control.axis&&this.selected===data.id&&this.tool==='translate')return;
   e.stopImmediatePropagation();e.preventDefault();
   this.events.select?.(data.id,false,-1);this.events.start?.();
@@ -184,11 +253,11 @@ export class Viewport{
   this.targetDrag={plane,offset:position.clone().sub(point||position),id:e.pointerId};this.orbit.enabled=false;
   this.renderer.domElement.setPointerCapture(e.pointerId);
  }
- targetDragMove(e){if(!this.targetDrag)return;e.stopImmediatePropagation();this.rayFromPointer(e);const point=this.ray.ray.intersectPlane(this.targetDrag.plane,new THREE.Vector3());if(point){point.add(this.targetDrag.offset);if(this.project.settings.snap)point.toArray().forEach((v,i)=>point.setComponent(i,Math.round(v/this.project.settings.grid)*this.project.settings.grid));this.targetDrag.plane.projectPoint(point,point);this.events.transform?.({position:point.toArray(),rotation:[0,0,0],node:-1,directTarget:true});}}
+ targetDragMove(e){if(!this.targetDrag)return;e.stopImmediatePropagation();this.rayFromPointer(e);const point=this.ray.ray.intersectPlane(this.targetDrag.plane,new THREE.Vector3());if(point){point.add(this.targetDrag.offset);this.targetDrag.plane.projectPoint(point,point);this.events.transform?.({position:point.toArray(),rotation:[0,0,0],node:-1,directTarget:true});}}
  targetDragEnd(e){if(!this.targetDrag)return;e.stopImmediatePropagation();if(this.renderer.domElement.hasPointerCapture(e.pointerId))this.renderer.domElement.releasePointerCapture(e.pointerId);this.targetDrag=null;this.orbit.enabled=true;this.events.end?.();}
  pointerUp(e){if(e.button!==0||!this.pointer||Math.hypot(e.clientX-this.pointer[0],e.clientY-this.pointer[1])>4||this.control.axis)return;const r=this.container.getBoundingClientRect();this.mouse.set((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1);this.ray.setFromCamera(this.mouse,this.camera);
   if(this.tool==='path'){if(this.view==='FREE'){this.events.message?.('布路径请先切换俯视、前视或侧视');return;}const data=editObject(this.project,this.project.objects.find(o=>o.id===this.selected));if(!data)return;const base=data.nodes?.at(-1)?.position||data.position,normal=this.view==='TOP'?[0,0,1]:this.view==='FRONT'?[0,1,0]:[1,0,0];const plane=new THREE.Plane().setFromNormalAndCoplanarPoint(vec(normal),vec(base));const point=this.ray.ray.intersectPlane(plane,new THREE.Vector3());if(point)this.events.pathPoint?.(point.toArray());return;}
-  const hits=this.ray.intersectObjects([...this.content.children,...this.helpers.children],true).filter(h=>h.object.userData.objectId);if(hits.length){const hit=hits[0].object;this.events.select?.(hit.userData.objectId,e.shiftKey,hit.userData.node??-1);}else if(!e.shiftKey)this.events.select?.(null,false,-1);
+  const hits=this.ray.intersectObjects([...this.content.children,...this.helpers.children],true).filter(h=>h.object.userData.objectId&&!this.fadedMeshes?.has(h.object));if(hits.length){const hit=hits[0].object;this.events.select?.(hit.userData.objectId,e.shiftKey,hit.userData.node??-1);}else if(!e.shiftKey)this.events.select?.(null,false,-1);
  }
  bounds(id){const root=this.roots.get(id);return root?new THREE.Box3().setFromObject(root):null;}
  worldMatrix(id){const root=this.roots.get(id);root?.updateMatrixWorld(true);return root?.matrixWorld.clone();}

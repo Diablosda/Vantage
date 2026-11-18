@@ -91,6 +91,13 @@ export class Evaluator{
     .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),delta[2]*progress)).normalize().toArray();
   }else if(distance(position,focus)<POSITION_EPS){state.cameraRotation=[...(start.quaternion||qrot(c.rotation).toArray())];state.warning='摄影机与焦点重合，暂时保留起始朝向；可继续移动机位';}
   if(cfg.mode==='FREE'&&cfg.freeMotion){const m=cfg.freeMotion;state.lens=keyValue(m.lenses||[],s.startTime+dt,state.lens);if(m.angles?.length){const [a,b,f]=keyInterval(m.angles,s.startTime+dt);state.cameraRotation=qrot(a.rotation).slerp(qrot(b.rotation),f).toArray();}}
+  if(cfg.mode==='FREE'&&cfg.aimMotion?.segments?.length){
+   state.focus=new SegmentMotion(cfg.aimMotion).at(dt)[0];
+   state.aimPath=true;
+   if(distance(position,state.focus)>=POSITION_EPS){
+    state.cameraRotation=cameraQuaternion({position,focus:state.focus,up:[0,0,1],roll:state.roll});
+   }
+  }
   return validCameraState(state);
  }
  camera(c,t,only=null){if(this.p.shotFramework===2){const entry=shotAt(this.p,c,t,only);if(!entry)return this.base(c,t);return this.shot(c,entry.owner,0,t,entry.unit);}const owner=followOwner(this.p,c);if(!owner)return this.base(c,t);const ss=edges(owner);let index=only?ss.findIndex(s=>s.id===only):ss.findIndex((s,i)=>t>=s.startTime&&(t<s.endTime||(i===ss.length-1&&t<=s.endTime)));return index>=0?this.shot(c,owner,index,t):this.base(c,t);}
@@ -139,6 +146,12 @@ export function configureShot(p,c,o,sid,mode,inherit=false){
  const state=inherit&&previous?ev.camera(previous.c,previous.unit.endTime,previous.unit.id):ev.base(c,0);
  const cfg=inherit&&previous?structuredClone(previous.cfg):{controlVersion:3,motion:'TRANSLATE',velocity:[0,0,0],rotationDelta:[0,0,0],axis:'X',direction:1,speed:0,tilt:0,radius:0,orbitAngle:360,azimuth:0};
  Object.assign(cfg,{owner:o.id,mode,focusTarget:tracking?.id||o.id,focusLocal:[0,0,0],focusWorld:[...(state.focus||add(state.position,rotate([0,0,-5],new THREE.Quaternion(...cameraQuaternion(state)))))],orientation:mode==='FREE'?'FREE':(inherit&&previous?.cfg.mode==='TRACK'?previous.cfg.orientation:'LOCK'),inherit:false,start:captureStart(state),lens:state.lens,roll:state.roll||0});
+ // Inherited shots start at the previous ending sight point, even when the path restarts at local time zero.
+ if(inherit&&mode==='FREE'&&cfg.aimMotion?.segments?.length){
+  const first=new SegmentMotion(cfg.aimMotion).at(0)[0],offset=sub(cfg.focusWorld,first);
+  cfg.aimMotion.position=add(cfg.aimMotion.position,offset);
+  for(const n of cfg.aimMotion.nodes)n.position=add(n.position,offset);
+ }
  // Across modes preserve the actual sight point in the new target's local coordinates.
  if(mode==='TRACK'&&inherit){const pose=ev.pose(tracking,unit.startTime),q=new THREE.Quaternion(...pose.quaternion).invert();cfg.focusLocal=rotate(sub(cfg.focusWorld,pose.position),q).map((v,i)=>v/tracking.scale[i]);}
  cfg.freeMotion??={id:c.id,position:[...cfg.start.position],rotation:[0,0,0],scale:[1,1,1],nodes:[],segments:[],angles:[],lenses:[],smooth:false,timing:'TIME'};
@@ -157,5 +170,23 @@ export function upgradeFramework(p,time=0){
  p.editShotId=(entries.find(e=>time>=e.unit.startTime&&time<e.unit.endTime)||entries[0])?.sid;p.shotFramework=2;return p;
 }
 
-// Reuse the existing path/keyframe editor on the shared scene clock; data belongs to this shot.
-export function editObject(p,o){const entry=currentShot(p);if(!o||entry?.c.id!==o.id||entry.cfg.mode!=='FREE')return o;const m=entry.cfg.freeMotion;if(!m)return o;const fields=new Set(['nodes','segments','angles','lenses','smooth','timing','speed','orientation']);return new Proxy(o,{get:(target,key)=>fields.has(key)?m[key]:target[key],set:(target,key,value)=>{if(fields.has(key))m[key]=value;else target[key]=value;return true;}});}
+export function freeAimShot(project,id){
+ const entry=currentShot(project);
+ return id&&entry?.cfg.mode==='FREE'&&entry.c.target===id?entry:null;
+}
+
+// Route path edits into the selected shot. The scene target keeps its own transform and follow binding.
+export function editObject(p,o){
+ const entry=currentShot(p);
+ if(!o||entry?.cfg.mode!=='FREE')return o;
+ const aim=entry.c.target===o.id;
+ const motion=aim?entry.cfg.aimMotion:entry.c.id===o.id?entry.cfg.freeMotion:null;
+ if(!motion)return o;
+ const fields=new Set(['nodes','segments','smooth','timing','speed']);
+ if(aim)fields.add('position');
+ else for(const key of ['angles','lenses','orientation'])fields.add(key);
+ return new Proxy(o,{
+  get:(target,key)=>aim&&key==='follow'?null:fields.has(key)?motion[key]:target[key],
+  set:(target,key,value)=>{if(fields.has(key))motion[key]=value;else target[key]=value;return true;}
+ });
+}

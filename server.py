@@ -20,6 +20,7 @@ import uuid
 import webbrowser
 from backend.paths import data_root,cache_root,asset_file,blender_path,ffmpeg_path,blender_environment
 from backend.native_dialog import choose_path
+from backend.project_output import bind_files, opened_files, destination as project_destination, publish as publish_project
 from backend.video_output import video_target,publish_video
 from backend.export_plan import export_times
 from backend.model import validate
@@ -47,13 +48,27 @@ def source_build(root=ROOT,web_files=None):
     return digest.hexdigest()
 INSTALL_ID=hashlib.sha256(str(ROOT.resolve()).encode()).hexdigest()
 BUILD_ID=source_build(web_files=WEB_FILES)
-CAPABILITIES=['native-save','video-only','save-directory','project-bundle','render-video','native-directory','preview-export','shot-export']
+CAPABILITIES=['native-save','video-only','save-directory','project-bundle','render-video','native-directory','preview-export','shot-export','project-overwrite']
+
+def finish_save(job):
+    if job['cancel'].is_set():
+        job.update(state='cancelled',message='已取消')
+        return False
+    target=job.get('_saveTarget')
+    job['saveTarget']=publish_project(target,job['_staged']) if target else bind_files(job['files'])
+    return True
 
 def run_job(job,payload,source=None):
     with GATE:
-        if job['cancel'].is_set():job.update(state='cancelled',message='已取消');return
+        if job['cancel'].is_set():
+            cache=job.pop('_temp',None)
+            if cache:cache.cleanup()
+            job.update(state='cancelled',message='已取消');return
         job.update(state='running',message='正在读取场景' if payload['mode']=='import' else '正在准备工程',progress=3)
         try:
+            if job.get('_saveTarget') and 'blend' not in job['files']:
+                if finish_save(job):job.update(state='done',progress=100,message='已完成',result={})
+                return
             if not BLENDER.is_file():raise ValueError('找不到本地渲染引擎，请检查项目内的 Blender 安装')
             RUNTIME.mkdir(parents=True,exist_ok=True)
             with tempfile.TemporaryDirectory(prefix='job-',dir=RUNTIME) as work:
@@ -107,6 +122,7 @@ def run_job(job,payload,source=None):
                         path=Path(job['directory'])/(key+'.png')
                         proc=subprocess.run([str(ffmpeg),'-v','error','-i',payload['video'],'-vf',rf'select=eq(n\,{index})','-frames:v','1','-y',str(path)],capture_output=True,creationflags=flags)
                         if proc.returncode or not path.is_file():raise ValueError('提取首尾帧失败')
+                if payload['mode']=='save' and not finish_save(job):return
                 job.update(state='done',progress=100,message='已完成',result=result)
                 if payload.get('blend'):
                     backup=Path(payload['blend']+'1')
@@ -180,7 +196,11 @@ def submit(payload,source=None):
         p=payload['project'];errors=validate(p,payload['mode'] in ('render','preview'),asset_root=DATA)
         if errors:raise ValueError('\n'.join(errors))
         destination=payload.pop('outputDirectory',None)
-        if destination:
+        target=payload.pop('saveTarget',None) if payload['mode']=='save' else None
+        bound=project_destination(target) if target else None
+        if bound:
+            parent=next(iter(bound.values())).parent
+        elif destination:
             if not isinstance(destination,str) or not Path(destination).is_absolute():raise ValueError('保存目录必须是本机绝对路径')
             parent=Path(destination).resolve()
             if not parent.is_dir():raise ValueError('保存目录不存在，请重新选择')
@@ -188,14 +208,23 @@ def submit(payload,source=None):
             PROJECTS.mkdir(parents=True,exist_ok=True);parent=PROJECTS.resolve()
         if shutil.disk_usage(parent).free<max(128*1024**2,p['settings']['duration']*4*1024**2):raise ValueError('输出磁盘空间不足')
         name=re.sub(r'[^\w\-\u4e00-\u9fff]','_',str(p.get('name','未命名工程')))[:60] or '未命名工程'
-        folder=parent/(name+'_'+time.strftime('%Y%m%d_%H%M%S')+'_'+ident[:6]);folder.mkdir()
+        if bound:
+            cache=tempfile.TemporaryDirectory(prefix='.vantage-save-',dir=parent)
+            folder=Path(cache.name);job['_temp']=cache;job['_saveTarget']=target
+        else:
+            folder=parent/(name+'_'+time.strftime('%Y%m%d_%H%M%S')+'_'+ident[:6]);folder.mkdir()
         model=folder/(name+'.previs');model.write_text(json.dumps(p,ensure_ascii=False),encoding='utf-8')
         payload['blend']=str(folder/(name+'.blend'))
         if payload['mode'] in ('render','preview'):payload['video']=str(folder/(name+'.mp4'))
-        bundle=folder/(name+'.previs.zip');create_bundle(p,bundle,DATA,legacy_root=ROOT)
+        bundle=folder/(name+'.previs.zip')
+        if not bound or 'bundle' in bound:create_bundle(p,bundle,DATA,legacy_root=ROOT)
         files={'project':model,'bundle':bundle,'blend':Path(payload['blend'])}
         if payload.get('video'):
             files['video']=Path(payload['video']);files['firstFrame']=folder/'firstFrame.png';files['lastFrame']=folder/'lastFrame.png'
+        if bound:
+            job['_staged']=files
+            if 'blend' in bound:payload['finalBlend']=str(bound['blend'])
+            files=bound;folder=parent
         job['files']={k:str(v) for k,v in files.items()}
         job['downloads']={k:'/api/downloads/'+ident+'/'+k+'/'+quote(v.name,safe='') for k,v in files.items()}
         job['directory']=str(folder);job['frames']=len(payload['times']) if payload.get('times') else max(1,round(p['settings']['fps']*p['settings']['duration']))
@@ -342,6 +371,19 @@ class Handler(BaseHTTPRequestHandler):
             if url.path=='/api/shutdown':
                 if any(j['state'] in ('queued','running','uploading') for j in JOBS.values()):self.json({'error':'仍有任务正在运行'},409);return
                 self.json({'stopping':True});threading.Thread(target=self.server.shutdown,daemon=True).start();return
+            if url.path=='/api/choose-project':
+                answer=choose_path(ROOT,'project',directory=data.get('directory',''))
+                if answer.get('cancelled'):self.json({'cancelled':True});return
+                path=Path(answer['file'])
+                if path.suffix.lower() not in ('.blend','.previs','.zip'):raise ValueError('工程文件类型无效')
+                key=bind_files(opened_files(path))
+                self.json({'file':path.name,'saveTarget':key});return
+            if url.path=='/api/open-project-file':
+                files=project_destination(data['saveTarget'])
+                path=next((p for p in files.values() if p.name==data['file']),None)
+                if path is None:raise ValueError('打开位置失效，请重新选择')
+                if path.stat().st_size>(MAX_ARCHIVE if path.suffix.lower()=='.zip' else MAX_BODY):raise ValueError('工程文件超过大小限制')
+                self.send_file(path);return
             if url.path in ('/api/choose-directory','/api/choose-video'):
                 answer=choose_path(ROOT,'video' if url.path.endswith('choose-video') else 'directory',data.get('name','Vantage.mp4'),data.get('directory',''))
                 self.json(answer);return
@@ -359,7 +401,7 @@ class Handler(BaseHTTPRequestHandler):
                     mode='render' if data.get('lighting',False) else 'preview'
                     ident=submit_video({'mode':mode,'project':data['project'],'outputFile':data.get('outputFile'),'overwrite':data.get('overwrite') is True,'browserSave':data.get('browserSave') is True,'times':times})
                     self.json({'job':ident,'times':times if mode=='preview' else None},202);return
-                self.json({'job':submit({'mode':'render' if url.path.endswith('export') else 'save','project':data['project'],'outputDirectory':data.get('outputDirectory')})},202);return
+                self.json({'job':submit({'mode':'render' if url.path.endswith('export') else 'save','project':data['project'],'outputDirectory':data.get('outputDirectory'),'saveTarget':data.get('saveTarget')})},202);return
             if url.path=='/api/validate':self.json({'errors':validate(data['project'],data.get('export',False),asset_root=DATA)});return
             if url.path.endswith('/cancel'):
                 job=JOBS.get(url.path.split('/')[-2])

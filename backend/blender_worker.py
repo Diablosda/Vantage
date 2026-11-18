@@ -254,6 +254,9 @@ def main():
                 animated=runtime.bake(scene)
                 bpy.ops.wm.save_as_mainfile(filepath=payload['blend'],check_existing=False)
                 bpy.ops.render.render(animation=True);runtime.clear_bake(animated)
+            elif payload.get('finalBlend'):
+                scene.previs.project_path=payload['finalBlend']
+                bpy.ops.wm.save_as_mainfile(filepath=payload['blend'],check_existing=False,relative_remap=False)
             else:runtime.save_project(scene,payload['blend'])
             answer={'saved':True}
         result.write_text(json.dumps(answer,ensure_ascii=False),encoding='utf-8');print('PREVIS_JOB_DONE',flush=True)

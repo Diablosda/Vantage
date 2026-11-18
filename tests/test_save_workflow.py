@@ -36,6 +36,30 @@ class SaveWorkflowTests(unittest.TestCase):
   p=fixture()
   with self.assertRaisesRegex(ValueError,'保存目录'):
    server.submit({'mode':'save','project':p,'outputDirectory':'relative/path'})
+class OverwriteTests(unittest.TestCase):
+ def test_partial_failure_and_other_writer(self):
+  from backend.project_output import bind_files,destination,publish
+  with tempfile.TemporaryDirectory() as tmp:
+   root=Path(tmp);stage=root/'stage';stage.mkdir()
+   files={kind:root/('Shot.'+ext) for kind,ext in [('project','previs'),('bundle','previs.zip'),('blend','blend')]}
+   staged={key:stage/path.name for key,path in files.items()}
+   for path in files.values():path.write_bytes(b'original')
+   for path in staged.values():path.write_bytes(b'edited')
+   first=bind_files(files);other=bind_files(files)
+   replace=os.replace
+   def interrupted(src,dst):
+    if src==staged['bundle']:raise PermissionError('locked')
+    return replace(src,dst)
+   with patch('backend.project_output.os.replace',interrupted),self.assertRaises(PermissionError):
+    publish(first,staged)
+   self.assertTrue(all(p.read_bytes()==b'original' for p in files.values()))
+   for p in stage.iterdir():p.unlink()
+   for path in staged.values():path.write_bytes(b'edited')
+   new=publish(first,staged)
+   self.assertEqual(destination(new),files)
+   with self.assertRaises(ValueError):destination(other)
+   self.assertTrue(all(p.read_bytes()==b'edited' for p in files.values()))
+
 class DesktopSaveTests(unittest.TestCase):
  def test_desktop_system_file_does_not_block_save(self):
   with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:

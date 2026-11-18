@@ -139,6 +139,10 @@ class Evaluator:
   if cfg.get('mode')=='FREE' and cfg.get('freeMotion'):
    m=cfg['freeMotion'];state['lens']=key(m.get('lenses',[]),s['startTime']+dt,state['lens'])
    if m.get('angles'):state['cameraRotation']=key(m['angles'],s['startTime']+dt,state.get('cameraRotation'),True)
+  if cfg.get('mode')=='FREE' and cfg.get('aimMotion',{}).get('segments'):
+   state['focus']=SegmentMotion(cfg['aimMotion']).at(dt)[0]
+   if distance(position,state['focus'])>=EPS:
+    state['cameraRotation']=camera_quaternion(dict(position=position,focus=state['focus'],up=(0,0,1),roll=state['roll']))
   return state
  def camera(self,c,t,only=None):
   if self.p.get('shotFramework')==2:
@@ -176,6 +180,10 @@ def validate_shots(project,export=False):
      if cfg['mode']=='TRACK' and not edges(objects[cfg['focusTarget']]):raise ValueError()
      if cfg['mode']=='FREE' and (cfg.get('orientation')!='FREE' or len(cfg.get('focusWorld',[]))!=3 or not all(isinstance(v,(int,float)) and math.isfinite(v) for v in cfg['focusWorld'])):raise ValueError()
      if 'lensEnd' in cfg and not 1<=cfg['lensEnd']<=1000:raise ValueError()
+     if 'aimMotion' in cfg:
+      aim=cfg['aimMotion']
+      if not isinstance(aim,dict) or not isinstance(aim.get('nodes'),list) or not isinstance(aim.get('segments'),list):raise ValueError()
+      if any(len(n['position'])!=3 for n in aim['nodes']) or path_errors(aim,export):raise ValueError()
      if cfg.get('freeMotion'):
       m=cfg['freeMotion']
       if path_errors(m):raise ValueError()

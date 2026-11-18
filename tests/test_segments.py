@@ -93,5 +93,6 @@ assert import_scene({'source':str(work/'scene.blend')})['project']==p
   cfg=c['shots']['s1'];cfg.update(mode='FREE',focusWorld=[0,0,.3],orientation='FREE',motion='DIAGONAL',velocity=[.5,0,0],rotationDelta=[.1,0,0],lensEnd=60)
   cfg['start']['quaternion']=[0,0,0,1];c['shots']={'b':cfg}
   cfg['freeMotion']=dict(id=c['id'],position=[2,0,.3],rotation=[0,0,0],scale=[1,1,1],nodes=[dict(id='c0',position=[2,0,.3],time=0,dwell=0),dict(id='c1',position=[3,0,.3],time=1.5,dwell=0)],segments=[dict(id='cs',start='c0',end='c1',startTime=0,endTime=1.5)],angles=[dict(time=.5,rotation=[0,0,0]),dict(time=1,rotation=[0,0,.2])],lenses=[dict(time=.5,value=40),dict(time=1,value=60)])
+  cfg['aimMotion']=dict(position=[0,0,.3],nodes=[dict(id='t0',position=[0,0,.3],time=0),dict(id='t1',position=[0,1,.6],time=.5)],segments=[dict(id='ts',start='t0',end='t1',startTime=0,endTime=.5)])
   self.assertEqual(validate(p,True),[]);self.verify_native(p)
 if __name__=='__main__':unittest.main()
