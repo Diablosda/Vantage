@@ -1,3 +1,4 @@
+import {isEditorGhost} from './object_tools.js';
 import {pathMark} from './path_marks.js';
 import {gridLayout} from './grid_layout.js';
 import {applyModelMaterialFallback} from './model_material.js';
@@ -50,6 +51,7 @@ export class Viewport{
  }
  disposeTree(group){group.traverse(o=>{o.geometry?.dispose();if(o.material){for(const m of Array.isArray(o.material)?o.material:[o.material])m.dispose();}});group.clear();}
  setProject(project){
+  this.editorGhosts=project.objects.filter(isEditorGhost);
   const structureKey=JSON.stringify(project.objects.map(o=>[o.id,o.role,o.modelSource,o.locatorColor,o.role==='ENV'?[o.position,o.rotation,o.scale,o.hidden]:null,(o.segments||[]).map(s=>[s.id,s.motion?.name]),(o.parts||[]).map(p=>[p.shape,p.topRatio,p.matrix,p.vertices?.length,p.triangles?.length])]).concat([project.settings.grid]));
   if(this.structureKey===structureKey){this.project=project;this.evaluator=new Evaluator(project);this.refreshPaths();this.update(this.time);this.resize();return;}
   this.structureKey=structureKey;this.assetError=false;this.project=project;this.evaluator=new Evaluator(project);this.control.detach();this.disposeTree(this.content);this.roots.clear();this.motions.clear();this.disposeTree(this.helpers);this.pathGroup=new THREE.Group();this.helpers.add(this.pathGroup);
@@ -99,7 +101,34 @@ export class Viewport{
    o.nodes?.forEach((n,i)=>{const dot=new THREE.Mesh(new THREE.SphereGeometry(i===this.nodeIndex&&o.id===this.selected?.075:.06,12,8),new THREE.MeshBasicMaterial({color:i===this.nodeIndex&&o.id===this.selected?0xc3ef88:0xe7b86a}));dot.position.fromArray(n.position);dot.userData={node:i,objectId:o.id};this.pathGroup.add(dot);});
   }
  }
- contextMenu(e){e.preventDefault();if(this.editLayer==='CAMERA')return;if(this.pointer&&Math.hypot(e.clientX-this.pointer[0],e.clientY-this.pointer[1])>5)return;this.rayFromPointer(e);this.ray.params.Line.threshold=this.camera.isOrthographicCamera?.1/this.camera.zoom:.12;const hits=this.ray.intersectObjects(this.pathGroup.children,false).filter(h=>h.object.userData.segmentId||this.project.objects.find(o=>o.id===h.object.userData.objectId)?.nodes[h.object.userData.node]?.dwell>0);if(hits.length){const d=hits[0].object.userData;this.events.segment?.(d.objectId,d.segmentId||this.project.objects.find(o=>o.id===d.objectId).nodes[d.node].id,e.clientX,e.clientY);return;}const objects=this.ray.intersectObjects(this.content.children,true).filter(h=>{const data=this.project.objects.find(o=>o.id===h.object.userData.objectId);return data&&!data.hidden&&data.role!=='ENV';});if(objects.length){this.events.objectMenu?.(objects[0].object.userData.objectId,e.clientX,e.clientY);return;}const point=this.ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,0,1),0),new THREE.Vector3());if(point)this.events.emptyMenu?.(point.toArray(),e.clientX,e.clientY);else this.events.message?.('请在俯视或自由视图选择地面位置');}
+ contextMenu(e){
+  e.preventDefault();
+  if(this.editLayer==='CAMERA'||(this.pointer&&Math.hypot(e.clientX-this.pointer[0],e.clientY-this.pointer[1])>5))return;
+  this.rayFromPointer(e);
+  this.ray.params.Line.threshold=this.camera.isOrthographicCamera?.1/this.camera.zoom:.12;
+  const objectById=id=>this.project.objects.find(o=>o.id===id);
+  const objectHit=this.ray.intersectObjects(this.content.children,true).find(hit=>{
+   const o=objectById(hit.object.userData.objectId);
+   return o&&o.role!=='ENV'&&(!o.hidden||isEditorGhost(o));
+  });
+  const owner=objectHit&&objectById(objectHit.object.userData.objectId);
+  // A hidden model can be restored even where its path crosses its silhouette.
+  if(!isEditorGhost(owner)){
+   const path=this.ray.intersectObjects(this.pathGroup.children,false).find(hit=>{
+    const d=hit.object.userData;
+    return d.segmentId||objectById(d.objectId)?.nodes[d.node]?.dwell>0;
+   });
+   if(path){
+    const d=path.object.userData;
+    this.events.segment?.(d.objectId,d.segmentId||objectById(d.objectId).nodes[d.node].id,e.clientX,e.clientY);
+    return;
+   }
+  }
+  if(owner){this.events.objectMenu?.(owner.id,e.clientX,e.clientY);return;}
+  const point=this.ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,0,1),0),new THREE.Vector3());
+  if(point)this.events.emptyMenu?.(point.toArray(),e.clientX,e.clientY);
+  else this.events.message?.('请在俯视或自由视图选择地面位置');
+ }
 
  select(id,nodeIndex=-1){this.selected=id;this.nodeIndex=nodeIndex;this.control.detach();const data=editObject(this.project,this.project?.objects.find(o=>o.id===id)),root=this.roots.get(id);
   this.control.setTranslationSnap(data?.role==='ENV'&&this.project.settings.snap?this.project.settings.grid:null);
@@ -158,23 +187,30 @@ export class Viewport{
   if(this.previewRenderer.getContext().isContextLost())throw Error('预览绘图连接已中断，请恢复后再导出');
   const until=Date.now()+60000;while(this.assetsLoading){if(Date.now()>until)throw Error('模型或动作加载超时');await new Promise(r=>setTimeout(r,100));}if(this.assetError)throw Error('模型或动作未完整加载，无法导出');
   this.update(t);this.previewRenderer.setPixelRatio(1);this.previewRenderer.setSize(this.project.settings.width,this.project.settings.height);this.render();
+  if(this.renderErrors?.['摄影机预览失败'])throw Error(this.renderErrors['摄影机预览失败']);
   const encoded=this.previewRenderer.domElement.toDataURL('image/png').split(',')[1];const bytes=Uint8Array.from(atob(encoded),c=>c.charCodeAt(0));return new Blob([bytes],{type:'image/png'});
  }
- editBackgroundMaterial(original){
+ fadedMaterial(original,opacity){
   this.editMaterialCache??=new WeakMap();
-  let faded=this.editMaterialCache.get(original);
-  if(!faded){
-   faded=original.clone();
-   faded.transparent=true;
-   faded.depthWrite=false;
-   faded.opacity=Math.min(original.opacity,.09);
-   this.editMaterialCache.set(original,faded);
+  let variants=this.editMaterialCache.get(original);
+  if(!variants){
+   variants=new Map();
+   this.editMaterialCache.set(original,variants);
    const release=()=>{
-    faded.dispose();
+    for(const faded of variants.values())faded.dispose();
     this.editMaterialCache.delete(original);
     original.removeEventListener('dispose',release);
    };
    original.addEventListener('dispose',release);
+  }
+  let faded=variants.get(opacity);
+  if(!faded){
+   faded=original.clone();
+   faded.transparent=true;
+   faded.depthWrite=false;
+   faded.opacity=Math.min(original.opacity,opacity);
+   faded.alphaTest=(original.alphaTest||0)*opacity;
+   variants.set(opacity,faded);
   }
   return faded;
  }
@@ -200,10 +236,23 @@ export class Viewport{
   this.fadedMeshes.clear();
   const direction=this.camera.getWorldDirection(new THREE.Vector3());
   const depth=this.editDepth(direction);
-  if(depth===null){draw();return;}
+  if(depth===null&&!this.editorGhosts.length){draw();return;}
   const bounds=new THREE.Box3(),nearest=new THREE.Vector3(),originals=new Map();
+  const ghostRoots=[];
+  const fade=(mesh,opacity)=>{
+   const material=mesh.material;
+   originals.set(mesh,material);
+   mesh.material=Array.isArray(material)?material.map(m=>this.fadedMaterial(m,opacity)):this.fadedMaterial(material,opacity);
+  };
   try{
-   for(const data of this.project.objects){
+   for(const data of this.editorGhosts){
+    const root=this.roots.get(data.id);
+    if(!root)continue;
+    ghostRoots.push(root);
+    root.visible=true;
+    root.traverseVisible(child=>{if(child.material)fade(child,.22);});
+   }
+   if(depth!==null)for(const data of this.project.objects){
     if(data.role!=='ENV'||data.hidden)continue;
     const root=this.roots.get(data.id);
     if(!root?.visible)continue;
@@ -217,14 +266,13 @@ export class Viewport{
       direction.y>=0?bounds.min.y:bounds.max.y,direction.z>=0?bounds.min.z:bounds.max.z);
      if(direction.dot(nearest)>=depth-1e-5) return;
      this.fadedMeshes.add(mesh);
-     const material=mesh.material;
-     originals.set(mesh,material);
-     mesh.material=Array.isArray(material)?material.map(m=>this.editBackgroundMaterial(m)):this.editBackgroundMaterial(material);
+     fade(mesh,.09);
     });
    }
    draw();
   }finally{
    for(const [mesh,material] of originals)mesh.material=material;
+   for(const root of ghostRoots)root.visible=false;
   }
  }
  render(){

@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import struct
 import json
+import math
 import mimetypes
 import os
 from pathlib import Path
@@ -22,14 +23,14 @@ from backend.paths import data_root,cache_root,asset_file,blender_path,ffmpeg_pa
 from backend.native_dialog import choose_path
 from backend.project_output import bind_files, opened_files, destination as project_destination, publish as publish_project
 from backend.video_output import video_target,publish_video
-from backend.export_plan import export_times
+from backend.export_plan import clip_times, export_times
 from backend.model import validate
 from backend.portable import create_bundle, read_bundle, MAX_ARCHIVE
 
 ROOT=Path(__file__).resolve().parent
 WEB=ROOT/'web';DATA=data_root();PROJECTS=DATA/'Projects';RUNTIME=cache_root()/'Jobs'
 BLENDER=blender_path()
-TOKEN=secrets.token_urlsafe(32);JOBS={};GATE=threading.Semaphore(1);APP_VERSION='2.1.3'
+TOKEN=secrets.token_urlsafe(32);JOBS={};GATE=threading.Semaphore(1);APP_VERSION='2.1.4'
 MAX_BODY=128*1024**2
 
 # Capture one frontend release per running process, so updating files cannot mix
@@ -48,7 +49,7 @@ def source_build(root=ROOT,web_files=None):
     return digest.hexdigest()
 INSTALL_ID=hashlib.sha256(str(ROOT.resolve()).encode()).hexdigest()
 BUILD_ID=source_build(web_files=WEB_FILES)
-CAPABILITIES=['native-save','video-only','save-directory','project-bundle','render-video','native-directory','preview-export','shot-export','project-overwrite']
+CAPABILITIES=['native-save','video-only','save-directory','project-bundle','render-video','native-directory','preview-export','shot-export','project-overwrite','frame-preview']
 
 def finish_save(job):
     if job['cancel'].is_set():
@@ -58,13 +59,27 @@ def finish_save(job):
     job['saveTarget']=publish_project(target,job['_staged']) if target else bind_files(job['files'])
     return True
 
+def release_clip(job):
+    cache=job.pop('_clipCache',None)
+    if cache:cache.cleanup()
+
+def expire_clip(job):
+    # Playback renews the cache. Abandoned editor sessions require no cleanup request.
+    remaining=1800-(time.monotonic()-job['_clipAccess'])
+    if remaining<=0:
+        release_clip(job)
+    elif '_clipCache' in job:
+        timer=threading.Timer(remaining,expire_clip,args=(job,))
+        timer.daemon=True
+        timer.start()
+
 def run_job(job,payload,source=None):
     with GATE:
         if job['cancel'].is_set():
             cache=job.pop('_temp',None)
             if cache:cache.cleanup()
             job.update(state='cancelled',message='已取消');return
-        job.update(state='running',message='正在读取场景' if payload['mode']=='import' else '正在准备工程',progress=3)
+        job.update(state='running',message={'import':'正在读取场景','frame':'Blender 正在渲染此帧'}.get(payload['mode'],'正在准备工程'),progress=3)
         try:
             if job.get('_saveTarget') and 'blend' not in job['files']:
                 if finish_save(job):job.update(state='done',progress=100,message='已完成',result={})
@@ -78,6 +93,11 @@ def run_job(job,payload,source=None):
                     if payload['mode']=='convert':payload['output']=str(work/'converted.glb')
                     elif payload['mode']=='import':payload['packedSource']=str(work/'packed.blend')
                 if payload['mode']=='render' and payload.get('times'):payload['frameFolder']=str(work/'frames')
+                if payload['mode']=='frame':payload['frameOutput']=str(work/'preview.png')
+                if payload['mode']=='clip':
+                    job['_clipCache']=tempfile.TemporaryDirectory(prefix='clip-',dir=RUNTIME)
+                    payload['frameFolder']=job['_clipCache'].name
+                    job.update(message='正在准备视频条场景',frames=len(payload['times']))
                 payload['dataRoot']=str(DATA)
                 task=work/'task.json';task.write_text(json.dumps(payload,ensure_ascii=False),encoding='utf-8')
                 flags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0
@@ -85,7 +105,7 @@ def run_job(job,payload,source=None):
                 job['process']=process;tail=[]
                 for line in process.stdout:
                     tail=(tail+[line.rstrip()])[-20:]
-                    match=re.search(r'(?:Video append frame|Append frame)\s+(\d+)',line)
+                    match=re.search(r'(?:Video append frame|Append frame|Vantage clip frame)\s+(\d+)',line)
                     if match:
                         frame=int(match[1]);frames=job.get('frames',1)
                         job.update(progress=min(98,10+int(frame/frames*88)),message=f'正在渲染 {frame} / {frames} 帧')
@@ -122,6 +142,15 @@ def run_job(job,payload,source=None):
                         path=Path(job['directory'])/(key+'.png')
                         proc=subprocess.run([str(ffmpeg),'-v','error','-i',payload['video'],'-vf',rf'select=eq(n\,{index})','-frames:v','1','-y',str(path)],capture_output=True,creationflags=flags)
                         if proc.returncode or not path.is_file():raise ValueError('提取首尾帧失败')
+                if payload['mode']=='frame':
+                    job['_frame']=Path(payload['frameOutput']).read_bytes()
+                    expire=threading.Timer(300,lambda:job.pop('_frame',None))
+                    expire.daemon=True
+                    expire.start()
+                    result['url']='/api/rendered-frame/'+job['id']
+                if payload['mode']=='clip':
+                    job['_clipAccess']=time.monotonic()
+                    expire_clip(job)
                 if payload['mode']=='save' and not finish_save(job):return
                 job.update(state='done',progress=100,message='已完成',result=result)
                 if payload.get('blend'):
@@ -133,6 +162,7 @@ def run_job(job,payload,source=None):
             cache=job.pop('_temp',None)
             if cache:cache.cleanup()
             job.pop('_payload',None)
+            if job['state']!='done':release_clip(job)
             if job['state']!='done' and payload.get('video'):
                 partial=Path(payload['video'])
                 if partial.exists():partial.unlink()
@@ -192,7 +222,7 @@ def release_video(job):
 def submit(payload,source=None):
     ident=uuid.uuid4().hex
     job={'id':ident,'state':'queued','progress':0,'message':'等待本地引擎','cancel':threading.Event(),'downloads':{}}
-    if payload['mode'] not in ('import','convert'):
+    if payload['mode'] not in ('import','convert','frame','clip'):
         p=payload['project'];errors=validate(p,payload['mode'] in ('render','preview'),asset_root=DATA)
         if errors:raise ValueError('\n'.join(errors))
         destination=payload.pop('outputDirectory',None)
@@ -255,6 +285,22 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith('/api/jobs/'):
             job=JOBS.get(path.rsplit('/',1)[-1])
             self.json({k:v for k,v in job.items() if k not in ('process','cancel','files') and not k.startswith('_')} if job else {'error':'任务不存在'},200 if job else 404);return
+        clip=re.fullmatch(r'/api/clip-frame/([a-f0-9]{32})/(\d{1,6})',path)
+        if clip:
+            job=JOBS.get(clip[1],{})
+            cache=job.get('_clipCache')
+            index=int(clip[2])
+            if not cache or job.get('state')!='done' or index>=job['frames']:
+                self.json({'error':'视频条缓存已过期，请重新渲染'},404);return
+            job['_clipAccess']=time.monotonic()
+            try:frame=(Path(cache.name)/f'{index:06d}.png').read_bytes()
+            except FileNotFoundError:self.json({'error':'视频条已释放'},404);return
+            self.headers_out(200,'image/png',len(frame));self.wfile.write(frame);return
+        if path.startswith('/api/rendered-frame/'):
+            job=JOBS.get(path.rsplit('/',1)[-1],{})
+            frame=job.pop('_frame',None) if job.get('state')=='done' else None
+            if not frame:self.json({'error':'渲染画面已过期，请重新渲染'},404);return
+            self.headers_out(200,'image/png',len(frame));self.wfile.write(frame);return
         if path.startswith('/api/downloads/'):
             parts=path.split('/',5)
             if len(parts)!=6:self.json({'error':'下载链接无效'},404);return
@@ -302,6 +348,18 @@ class Handler(BaseHTTPRequestHandler):
             limit=MAX_ARCHIVE if url.path=='/api/project-bundle' else MAX_BODY
             if not 0<length<=limit:raise ValueError('文件超过大小限制')
             raw=self.rfile.read(length)
+            if url.path=='/api/save-frame':
+                if len(raw)<33 or not raw.startswith(bytes.fromhex('89504e470d0a1a0a0000000d49484452')):raise ValueError('请提供有效的 PNG 画面')
+                width,height=struct.unpack_from('>II',raw,16)
+                if not (1<=width<=8192 and 1<=height<=8192):raise ValueError('PNG 尺寸无效')
+                name=parse_qs(url.query).get('name',['Vantage.png'])[0]
+                answer=choose_path(ROOT,'frame',name,str(PROJECTS))
+                if answer.get('cancelled'):self.json({'cancelled':True});return
+                target,stamp=video_target(answer.get('outputFile'),answer.get('overwrite') is True,suffix='.png')
+                with tempfile.TemporaryDirectory(prefix='vantage-frame-') as directory:
+                    source=Path(directory)/'frame.png';source.write_bytes(raw)
+                    publish_video(source,target,stamp,threading.Event())
+                self.json({'saved':True});return
             if url.path=='/api/project-bundle':
                 if not raw.startswith(b'PK\x03\x04'):raise ValueError('选择的不是 ZIP 工程包；请使用保存目录中的 .previs.zip 文件')
                 project=read_bundle(raw,DATA);errors=validate(project,asset_root=DATA)
@@ -364,6 +422,27 @@ class Handler(BaseHTTPRequestHandler):
                 (Path(job['_payload']['frameFolder'])/f'{index:06d}.png').write_bytes(raw);job['_received']+=1;job['progress']=int(80*job['_received']/job['frames'])
                 self.json({'received':job['_received']});return
             data=json.loads(raw)
+            if url.path=='/api/clip-release':
+                job=JOBS.get(data.get('job'),{})
+                if job.get('state')=='done':release_clip(job)
+                self.json({'released':True});return
+            if url.path in ('/api/render-frame','/api/render-clip'):
+                project=data['project']
+                errors=validate(project,asset_root=DATA)
+                if errors:raise ValueError('；'.join(errors))
+                if not project.get('activeCamera'):raise ValueError('请先添加摄影机')
+                segment=data.get('segment')
+                if segment is not None and not isinstance(segment,str):raise ValueError('镜头标识无效')
+                sources={o['sceneSource']['asset'] for o in project['objects'] if o.get('sceneSource') and not o.get('hidden')}
+                asset=data.get('sceneAsset')
+                if asset is not None and asset not in sources:raise ValueError('场景环境来源无效')
+                if url.path=='/api/render-clip':
+                    times=clip_times(project,data['owner'],segment,data['firstFrame'])
+                    ident=submit({'mode':'clip','project':project,'segment':segment,'sceneAsset':asset,'times':times})
+                    self.json({'job':ident,'frames':len(times)},202);return
+                time=data['time']
+                if not isinstance(time,(int,float)) or not math.isfinite(time) or not 0<=time<=project['settings']['duration']:raise ValueError('渲染时间无效')
+                self.json({'job':submit({'mode':'frame','project':project,'time':time,'segment':segment,'sceneAsset':asset})},202);return
             if url.path=='/api/models/import':
                 source=asset_file('model',data['name'],DATA,ROOT)
                 if source.parent not in {(DATA/'model').resolve(),(ROOT/'model').resolve()} or source.suffix.lower()!='.glb' or not source.is_file():raise ValueError('模型不存在')
@@ -397,7 +476,9 @@ class Handler(BaseHTTPRequestHandler):
                 job['state']='queued';threading.Thread(target=run_video_job if job.get('_videoOnly') else run_job,args=(job,job['_payload']),daemon=True).start();self.json({'job':data['job']});return
             if url.path in ('/api/save','/api/export'):
                 if url.path=='/api/export':
-                    times=export_times(data['project'],data.get('scope','all'),data.get('owner'),data.get('segment'))
+                    if data.get('scope')=='clip':
+                        times=clip_times(data['project'],data['owner'],data['segment'],data['firstFrame'])
+                    else:times=export_times(data['project'],data.get('scope','all'),data.get('owner'),data.get('segment'))
                     mode='render' if data.get('lighting',False) else 'preview'
                     ident=submit_video({'mode':mode,'project':data['project'],'outputFile':data.get('outputFile'),'overwrite':data.get('overwrite') is True,'browserSave':data.get('browserSave') is True,'times':times})
                     self.json({'job':ident,'times':times if mode=='preview' else None},202);return

@@ -14,3 +14,11 @@ export function translateObjectAndPath(o, delta){
  o.position=positions[0];(o.nodes||[]).forEach((n,i)=>n.position=positions[i+1]);
 }
 export function canColor(o){return !!o&&['ACTOR','PROP'].includes(o.role)&&!o.modelSource&&!o.sceneSource&&!!o.parts?.length;}
+
+export function canGhostModel(o){return o?.role==='ACTOR'||o?.role==='PROP';}
+export function isEditorGhost(o){return canGhostModel(o)&&o.hidden===true&&o.ghostInEditor===true;}
+export function toggleVisibility(o){
+ o.hidden=!o.hidden;
+ if(o.hidden&&canGhostModel(o))o.ghostInEditor=true;
+ else delete o.ghostInEditor;
+}

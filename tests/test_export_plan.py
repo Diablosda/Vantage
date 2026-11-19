@@ -1,7 +1,7 @@
 import test_environment
 import os
 import unittest
-from backend.export_plan import export_times
+from backend.export_plan import clip_times, export_times
 class ExportPlanTests(unittest.TestCase):
  def project(self):
   o={'id':'actor','nodes':[{'id':'a','position':[0,0,0],'time':0,'dwell':0},{'id':'b','position':[1,0,0],'time':1,'dwell':1},{'id':'c','position':[2,0,0],'time':3,'dwell':0},{'id':'d','position':[3,0,0],'time':4,'dwell':0}], 'segments':[{'id':'s1','start':'a','end':'b','startTime':0,'endTime':1},{'id':'s2','start':'b','end':'c','startTime':2,'endTime':3},{'id':'s3','start':'c','end':'d','startTime':3,'endTime':4}]}
@@ -13,3 +13,20 @@ class ExportPlanTests(unittest.TestCase):
   with self.assertRaises(ValueError):export_times(self.project(),'current','actor','s2')
  def test_dwell_and_overlap_union(self):
   p=self.project();p['objects'][1]['shots']['b']={'owner':'actor'};self.assertEqual(export_times(p),[0,.5,1,1.5,3,3.5])
+
+ def test_clip_boundaries_partition_shot_without_repeat_or_gap(self):
+  p=self.project()
+  shot=p['objects'][1]['shots']['s3']
+  p['settings']['fps']=8
+  shot['clipCuts']=[.25,.625]
+  clips=[clip_times(p,'actor','s3',start) for start in (0,2,5)]
+  self.assertEqual([len(c) for c in clips],[2,3,3])
+  self.assertEqual(sum(clips,[]),export_times(p,'current','actor','s3'))
+  with self.assertRaises(ValueError):clip_times(p,'actor','s3',3)
+ def test_cut_on_dwell_with_fractional_start(self):
+  p=self.project()
+  node=p['objects'][0]['nodes'][1]
+  node.update(time=1.13,dwell=.66)
+  p['objects'][1]['shots']['b']={'owner':'actor','clipCuts':[.5]}
+  self.assertEqual(clip_times(p,'actor','b',0),[1.13])
+  self.assertEqual(clip_times(p,'actor','b',1),[1.63])

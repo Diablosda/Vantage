@@ -156,6 +156,8 @@ export function configureShot(p,c,o,sid,mode,inherit=false){
  if(mode==='TRACK'&&inherit){const pose=ev.pose(tracking,unit.startTime),q=new THREE.Quaternion(...pose.quaternion).invert();cfg.focusLocal=rotate(sub(cfg.focusWorld,pose.position),q).map((v,i)=>v/tracking.scale[i]);}
  cfg.freeMotion??={id:c.id,position:[...cfg.start.position],rotation:[0,0,0],scale:[1,1,1],nodes:[],segments:[],angles:[],lenses:[],smooth:false,timing:'TIME'};
  syncOrbit(p,cfg,unit.startTime);
+ if(c.shots?.[sid]?.clipCuts)cfg.clipCuts=[...c.shots[sid].clipCuts];
+ else delete cfg.clipCuts;
  c.shots??={};c.shots[sid]=cfg;p.editShotId=sid;p.shotFramework=2;
  return cfg;
 }

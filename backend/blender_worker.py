@@ -25,6 +25,19 @@ def build(project,render=False):
     for old in list(bpy.data.scenes):
         if old!=scene:bpy.data.scenes.remove(old)
     scene.render.fps=project['settings']['fps'];objects={};collections={}
+    # Append a source library once, so a detailed set shares its materials and textures.
+    sources={}
+    for item in project['objects']:
+        meta=item.get('sceneSource')
+        if meta:sources.setdefault(meta['asset'],{})[meta['object']]=None
+    for asset, originals in sources.items():
+        path=asset_file('场景',asset,legacy=ROOT)
+        names=list(originals)
+        with bpy.data.libraries.load(str(path),link=False) as (available,loaded):
+            missing=set(names).difference(available.objects)
+            if missing:raise ValueError('场景对象不存在：'+min(missing))
+            loaded.objects=names[:]
+        originals.update(zip(names,loaded.objects))
     with edit_batch():
         for data in project['objects']:
             role=data['role']
@@ -51,11 +64,12 @@ def build(project,render=False):
             model_source=data.get('modelSource')
             if model_source:
                 source=asset_file('model',model_source['name'],legacy=ROOT)
-                if source.parent!=(ROOT/'model').resolve() or source.suffix.lower()!='.glb' or not source.is_file():raise ValueError('找不到原始模型：'+model_source['name'])
+                if source.suffix.lower()!='.glb' or not source.is_file():raise ValueError('找不到原始模型：'+model_source['name'])
                 before=set(bpy.data.objects)
                 bpy.ops.import_scene.gltf(filepath=str(source))
                 imported=set(bpy.data.objects)-before
                 for child in imported:
+                    if data.get('hidden'):child.hide_render=True
                     if child.parent not in imported:
                         world=child.matrix_world.copy()
                         child.parent=obj
@@ -82,13 +96,9 @@ def build(project,render=False):
             scene_source=data.get('sceneSource')
             original=None
             if scene_source:
-                source=(asset_file('场景',scene_source['asset'],legacy=ROOT)).resolve()
-                if not source.is_file():raise ValueError('找不到原始场景：'+scene_source['asset'])
-                with bpy.data.libraries.load(str(source),link=False) as (available,loaded):
-                    if scene_source['object'] not in available.objects:raise ValueError('场景对象不存在：'+scene_source['object'])
-                    loaded.objects=[scene_source['object']]
-                original=loaded.objects[0]
+                original=sources[scene_source['asset']][scene_source['object']]
                 if scene_source.get('kind')=='LIGHT':
+                    original=original.copy()
                     scene.collection.objects.link(original);original.animation_data_clear();original.parent=obj
                     original.matrix_parent_inverse=Matrix.Identity(4);original.matrix_basis=matrix(scene_source['localMatrix']);original.hide_render=data.get('hidden',False)
             for part in ([] if model_source else data.get('parts',[])):
@@ -100,8 +110,7 @@ def build(project,render=False):
                 else:
                     mesh=bpy.data.meshes.new('白模网格');mesh.from_pydata(part['vertices'],[],part['triangles']);mesh.update()
                     child=bpy.data.objects.new('白模部件',mesh);scene.collection.objects.link(child)
-                    bpy.context.view_layer.objects.active=child
-                child=bpy.context.object
+                if shape!='MESH':child=bpy.context.object
                 if original and scene_source.get('kind')!='LIGHT' and child.type=='MESH':
                     for material in original.data.materials:child.data.materials.append(material)
                     for face,index in zip(child.data.polygons,part.get('materialIndices',[])):
@@ -164,13 +173,13 @@ def import_scene(payload):
         if obj.type=='CAMERA':data.update(role='CAMERA',locked=False,rotation=list(obj.matrix_world.to_euler('XYZ')),lens=obj.data.lens*36/obj.data.sensor_width,viewMode='FREE')
         elif obj.type=='LIGHT':
             local=Matrix.Translation(Vector(position)).inverted()@obj.matrix_world
-            data['sceneSource']={'asset':'PENDING.blend','object':source.name,'kind':'LIGHT','localMatrix':flat(local),'collectionPaths':collection_paths.get(source.name,[])}
+            data['sceneSource']={'asset':'PENDING.blend','object':source.name,'kind':'LIGHT','scene':scene.name,'localMatrix':flat(local),'collectionPaths':collection_paths.get(source.name,[])}
         else:
             mesh=obj.to_mesh();mesh.calc_loop_triangles();count+=len(mesh.vertices)
             if count>400000:raise ValueError('场景超过 40 万顶点，请先简化白模')
             local=Matrix.Translation(Vector(position)).inverted()@obj.matrix_world
             data['parts']=[{'shape':'MESH','matrix':flat(local),'vertices':[list(v.co) for v in mesh.vertices],'triangles':[list(t.vertices) for t in mesh.loop_triangles],'materialIndices':[t.material_index for t in mesh.loop_triangles],'smoothFaces':[mesh.polygons[t.polygon_index].use_smooth for t in mesh.loop_triangles],'uvLayers':[{'name':uv.name,'values':[[list(uv.data[i].uv) for i in t.loops] for t in mesh.loop_triangles]} for uv in (mesh.uv_layers if not payload.get('glb') else [])]}];obj.to_mesh_clear()
-            if not payload.get('glb'):data['sceneSource']={'asset':'PENDING.blend','object':source.name,'kind':'MESH','collectionPaths':collection_paths.get(source.name,[])}
+            if not payload.get('glb'):data['sceneSource']={'asset':'PENDING.blend','object':source.name,'kind':'MESH','scene':scene.name,'collectionPaths':collection_paths.get(source.name,[])}
         objects.append(data)
     if payload.get('glb'):
         parts=[];points=[]
@@ -224,6 +233,57 @@ def convert_model(payload):
     result=Path(payload['output']);bpy.ops.export_scene.gltf(filepath=str(result),export_format='GLB')
     return {'converted':True}
 
+def configure_preview(scene, payload):
+    project=payload['project']
+    settings=project['settings']
+    scene.render.engine='BLENDER_EEVEE'
+    source_meta=next((o['sceneSource'] for o in project['objects']
+                      if o.get('sceneSource') and o['sceneSource']['asset']==payload.get('sceneAsset')),None)
+    if source_meta:
+        source=asset_file('场景',source_meta['asset'],legacy=ROOT)
+        with bpy.data.libraries.load(str(source),link=False) as (available,loaded):
+            name=source_meta.get('scene')
+            loaded.scenes=[name if name in available.scenes else available.scenes[0]] if available.scenes else []
+        if loaded.scenes:
+            original=loaded.scenes[0]
+            scene.world=original.world
+            scene.render.engine=original.render.engine if original.render.engine in ('CYCLES','BLENDER_EEVEE') else 'BLENDER_EEVEE'
+            scene.render.film_transparent=original.render.film_transparent
+            scene.view_settings.view_transform=original.view_settings.view_transform
+            scene.view_settings.look=original.view_settings.look
+            scene.view_settings.exposure=original.view_settings.exposure
+            scene.view_settings.gamma=original.view_settings.gamma
+            if scene.render.engine=='CYCLES':
+                scene.cycles.samples=original.cycles.samples
+                scene.cycles.use_denoising=original.cycles.use_denoising
+            bpy.data.scenes.remove(original)
+    elif not any(o.type=='LIGHT' and not o.hide_render for o in scene.objects):
+        light=bpy.data.lights.new('预演照明','SUN')
+        light.energy=3
+        obj=bpy.data.objects.new('预演照明',light)
+        scene.collection.objects.link(obj)
+        obj.rotation_euler=(.4,-.5,-.3)
+    scene.render.resolution_x=settings['width']
+    scene.render.resolution_y=settings['height']
+    scene.render.resolution_percentage=100
+    scene.render.image_settings.file_format='PNG'
+    scene.render.image_settings.color_mode='RGBA' if scene.render.film_transparent else 'RGB'
+
+def render_at(scene, settings, time, segment, output):
+    frame=1+time*settings['fps']
+    scene.frame_set(int(frame),subframe=frame-int(frame))
+    runtime.evaluate(scene,strict=True,scene_time=time,camera_segment=segment)
+    scene.render.filepath=str(output)
+    # Render callbacks must retain the explicitly evaluated shot, including overlaps.
+    previous_busy=runtime.busy
+    runtime.busy=True
+    try:
+        bpy.context.view_layer.update()
+        bpy.ops.render.render(write_still=True)
+    finally:
+        runtime.busy=previous_busy
+
+
 def main():
     task=Path(sys.argv[sys.argv.index('--')+1]);payload=json.loads(task.read_text(encoding='utf-8'));result=task.parent/'result.json'
     try:
@@ -231,6 +291,18 @@ def main():
         if payload.get('dataRoot'):os.environ['VANTAGE_DATA_DIR']=payload['dataRoot']
         if mode=='import':answer=import_scene(payload)
         elif mode=='convert':answer=convert_model(payload)
+        elif mode in ('frame','clip'):
+            project=payload['project']
+            scene=build(project)
+            configure_preview(scene,payload)
+            if mode=='frame':
+                render_at(scene,project['settings'],payload['time'],payload.get('segment'),payload['frameOutput'])
+            else:
+                folder=Path(payload['frameFolder'])
+                for i,t in enumerate(payload['times']):
+                    render_at(scene,project['settings'],t,payload['segment'],folder/f'{i:06d}.png')
+                    print('Vantage clip frame',i+1,flush=True)
+            answer={'rendered':True}
         else:
             project=payload['project'];scene=build(project,mode=='render')
             scene.previs.project_path=payload['blend'];scene.previs.output_path=payload.get('video','')

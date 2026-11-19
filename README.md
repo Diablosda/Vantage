@@ -4,7 +4,7 @@
 
 **把走位、构图和镜头运动，变成可以观看、调整和导出的三维预演。**
 
-[下载安装包](https://github.com/Diablosda/Vantage/releases/tag/v2.1.3) · [宣传视频](#宣传视频) · [使用流程与功能](#使用流程与功能) · [详细操作说明](产品说明.md)
+[下载安装包](https://github.com/Diablosda/Vantage/releases/tag/v2.1.4) · [宣传视频](#宣传视频) · [使用流程与功能](#使用流程与功能) · [详细操作说明](产品说明.md)
 
 ## Vantage 是什么
 
@@ -84,6 +84,10 @@ https://github.com/user-attachments/assets/3e505bb6-6474-4a8e-bfb9-e03036ed7c4c
 
 ![已设镜头的路径标记、摄影机预览与镜头时间轴](docs/media/timeline-preview.jpg)
 
+在时间线上右键视频条，可在播放头处切分，或用 Blender 渲染选中的一条。渲染后可回看并单独导出该条 MP4。右键时间轴还可将右上摄影机小窗的当前画面保存为 PNG。
+
+导入带材质和灯光的 Blender 场景后，点击摄影机小窗的「Blender 渲染」可查看当前机位的彩色画面。在编辑区右键人物或物品选择「隐藏模型」，即可让它从摄影机画面中消失；右键半透明模型选择「显示模型」可恢复。
+
 ### 5. 导出当前镜头或整片视频
 
 - 顶部 **“导出视频”**：按场景时间顺序拼接全部已配置镜头的片段，跳过未配置镜头的间隔与尾部。
@@ -103,7 +107,7 @@ https://github.com/user-attachments/assets/3e505bb6-6474-4a8e-bfb9-e03036ed7c4c
 
 ### Windows 用户
 
-1. 打开 [v2.1.3 下载页](https://github.com/Diablosda/Vantage/releases/tag/v2.1.3)，下载 **`Vantage-2.1.3-Setup.exe`**；源码归档和第三方源码附件无需下载。
+1. 打开 [v2.1.4 下载页](https://github.com/Diablosda/Vantage/releases/tag/v2.1.4)，下载 **`Vantage-2.1.4-Setup.exe`**；源码归档和第三方源码附件无需下载。
 2. 运行安装向导，选择安装位置。默认安装到当前用户目录，无需管理员权限。
 3. 从桌面或开始菜单启动 **Vantage**。界面在本机浏览器中打开，新建或加载项目即可使用。
 
@@ -130,4 +134,4 @@ Git 仓库包含应用源码、启动器和前端资源，**不包含大体积 B
 
 场景导入生成静态几何快照，不保证完整保留父子关系、修改器、动画或全部材质节点；集合实例需先实体化，外部贴图应在 Blender 内打包。模型与动作兼容性取决于素材。完整工程包上限 512 MB、单资源上限 128 MB、场景可见网格快照合计上限 40 万顶点。
 
-v2.1.3 已通过 63 项前端与 60 项 Python 测试；尚未完成全新 Windows 环境和原生保存窗口的人工点击验收。更多限制见[产品说明](产品说明.md)。第三方组件许可及对应源码见 [THIRD_PARTY.md](THIRD_PARTY.md)；Vantage 自身尚未单独指定开源许可证。
+v2.1.4 已通过 64 项前端与 63 项 Python 测试；尚未完成全新 Windows 环境和原生保存窗口的人工点击验收。更多限制见[产品说明](产品说明.md)。第三方组件许可及对应源码见 [THIRD_PARTY.md](THIRD_PARTY.md)；Vantage 自身尚未单独指定开源许可证。

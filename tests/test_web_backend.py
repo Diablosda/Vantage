@@ -19,6 +19,11 @@ def fixture():
     return dict(version=2,id='engineering',name='temporary-engineering-check',settings=dict(fps=12,duration=.5,width=192,height=144,grid=.5),activeCamera='camera',objects=[actor,cam,target])
 
 class ModelTests(unittest.TestCase):
+    def test_detailed_scene_has_no_object_count_cap(self):
+        p=fixture()
+        p['objects'].extend(obj(f'background-{i}','ENV') for i in range(350))
+        self.assertEqual(validate(p,True),[])
+
     def test_valid_scene(self):self.assertEqual(validate(fixture(),True),[])
     def test_locator_color_validation(self):
         p=fixture();p['objects'][0]['locatorColor']='#12aBcF';self.assertEqual(validate(p),[])

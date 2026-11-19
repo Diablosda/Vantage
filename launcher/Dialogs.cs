@@ -27,11 +27,12 @@ internal static class Dialogs {
                 owner.Opacity=0; owner.Width=1; owner.Height=1;
                 owner.StartPosition=FormStartPosition.CenterScreen;
                 owner.Show(); owner.Activate(); SetForegroundWindow(owner.Handle);
-                if(kind=="video") {
+                if(kind=="video" || kind=="frame") {
+                    bool frame=kind=="frame";
                     using(var dialog=new SaveFileDialog()) {
-                        dialog.Title="Vantage · 导出视频另存为";
-                        dialog.Filter="MP4 视频 (*.mp4)|*.mp4";
-                        dialog.DefaultExt="mp4"; dialog.AddExtension=true;
+                        dialog.Title=frame?"Vantage · 保存此帧":"Vantage · 导出视频另存为";
+                        dialog.Filter=frame?"PNG 图片 (*.png)|*.png":"MP4 视频 (*.mp4)|*.mp4";
+                        dialog.DefaultExt=frame?"png":"mp4"; dialog.AddExtension=true;
                         dialog.OverwritePrompt=true; dialog.CheckPathExists=true;
                         dialog.RestoreDirectory=true; dialog.FileName=Path.GetFileName(name);
                         if(Directory.Exists(directory)) dialog.InitialDirectory=directory;

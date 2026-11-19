@@ -172,6 +172,8 @@ def validate_shots(project,export=False):
    except (KeyError,TypeError,ValueError):errors.append(c['name']+'：线段数据无效')
   for sid,cfg in c.get('shots',{}).items():
    try:
+    cuts=cfg.get('clipCuts',[])
+    if not isinstance(cuts,list) or any(type(t) not in (float,int) or not 0<t<=600 for t in cuts):raise ValueError()
     if sid not in segments or c['role']!='CAMERA':raise ValueError()
     owner,s=segments[sid]
     if cfg['owner']!=owner['id'] or (cfg['focusTarget'] not in objects or (project.get('shotFramework')!=2 and cfg['focusTarget']!=owner['id'])):raise ValueError()

@@ -1,6 +1,6 @@
 import {modernWorkflow} from './service_status.js';
 import {canGround,groundObject} from './grounding.js';
-import {gridMove,translateObjectAndPath,canColor} from './object_tools.js';
+import {gridMove,translateObjectAndPath,canColor,canGhostModel,toggleVisibility} from './object_tools.js';
 import {options} from './ui_options.js';
 import {scaleSceneObjects,initialSceneCamera,setSceneScale} from './scene_import.js';
 import {calibrateOrigin} from './model_origin.js';
@@ -33,9 +33,9 @@ const view=new Viewport($('#viewport'),$('#preview'),{select:select,start:gestur
 function active(){return editObject(project,project.objects.find(o=>o.id===selected));}
 function camera(){return project.objects.find(o=>o.id===project.activeCamera&&o.role==='CAMERA');}
 function toast(message,error=false){const el=$('#toast');el.textContent=message;el.classList.remove('hidden');el.classList.toggle('error',error);clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.add('hidden'),error?6500:3500);$('#statusText').textContent=message;}
-function markDirty(){dirty=true;revision++;$('#dirty').textContent='有修改';clearTimeout(autosaveTimer);autosaveTimer=setTimeout(saveDraft,700);}
+function markDirty(keepClipCache=false){if(!keepClipCache)forgetRenderedClips();dirty=true;revision++;$('#dirty').textContent='有修改';clearTimeout(autosaveTimer);autosaveTimer=setTimeout(saveDraft,700);}
 const signature=p=>JSON.stringify(p,(k,v)=>k==='vertices'||k==='triangles'?undefined:v);
-function change(fn){const before=clone(project),stamp=signature(project),oldSelected=selected,oldMulti=new Set(multi),oldNode=nodeIndex;try{fn();if(signature(project)===stamp)return;refresh();undo.push(before);if(undo.length>40)undo.shift();redo.length=0;markDirty();$('#undoBtn').disabled=false;$('#redoBtn').disabled=true;}catch(e){project=before;selected=oldSelected;multi=oldMulti;nodeIndex=oldNode;try{refresh();}catch{}toast(e.message,true);}}
+function change(fn,keepClipCache=false){const before=clone(project),stamp=signature(project),oldSelected=selected,oldMulti=new Set(multi),oldNode=nodeIndex;try{fn();if(signature(project)===stamp)return;refresh();undo.push(before);if(undo.length>40)undo.shift();redo.length=0;markDirty(keepClipCache);$('#undoBtn').disabled=false;$('#redoBtn').disabled=true;}catch(e){project=before;selected=oldSelected;multi=oldMulti;nodeIndex=oldNode;try{refresh();}catch{}toast(e.message,true);}}
 function refresh(){migrate(project);pruneCurrentShot(project);for(const c of project.objects)for(const cfg of Object.values(c.shots||{})){if(cfg.freeMotion)retime(cfg.freeMotion);if(cfg.aimMotion)retime(cfg.aimMotion);}if(shotSelection&&!shotData().cfg){shotSelection=null;view.startEdit=null;tab='camera';}for(const o of project.objects){retime(o);if(o.nodes.length)project.settings.duration=Math.max(project.settings.duration,...o.nodes.map(n=>n.time+(n.dwell||0)));}if(previewRange&&currentShot(project)){const u=currentShot(project).unit;previewRange={start:u.startTime,end:u.endTime};time=Math.max(u.startTime,Math.min(time,u.endTime));}for(const c of project.objects.filter(o=>o.role==='CAMERA')){const t=project.objects.find(o=>o.id===c.target);if(t&&!(Number.isFinite(c.controlScale)&&c.controlScale>0))c.controlScale=controlScale(Math.hypot(...c.position.map((v,i)=>v-t.position[i])),c.lens||50);}project.objects.forEach(rememberInitial);const focused=document.activeElement,editing=inputCommit||$('#inspector').contains(focused)&&focused.tagName==='INPUT'&&focused.type!=='checkbox';view.setProject(project);view.select(selected,nodeIndex);renderObjects();if(!editing)renderInspector();renderTimeline();renderSettings();$('#undoBtn').disabled=!undo.length;$('#redoBtn').disabled=!redo.length;}
 function select(value,add=false,node=-1){playing=false;if(shotSelection&&value!==shotSelection.camera){shotSelection=null;view.startEdit=null;view.segmentId=null;}if(add&&value){multi.has(value)?multi.delete(value):multi.add(value);selected=multi.has(value)?value:[...multi].at(-1)||null;}else{selected=value;multi=new Set(value?[value]:[]);}if(value===camera()?.id&&currentShot(project)&&node<0){const entry=currentShot(project);shotSelection={camera:value,owner:entry.owner.id,sid:entry.unit.id};}if(node>=0)view.startEdit=null;if(shotSelection&&value===shotSelection.camera&&node<0){const {cfg,segment}=shotData();if(cfg?.controlVersion===3){view.startEdit={camera:value,position:[...cfg.start.position],locked:false};view.previewSegment=segment.id;}}nodeIndex=node;if(value&&active()?.nodes?.length&&nodeIndex<0)nodeIndex=0;if(node>=0)tab='path';view.select(selected,nodeIndex);renderObjects();renderInspector();renderTimeline();}
 function setTime(t){time=Math.max(0,Math.min(project.settings.duration,t));view.update(time);$('#timeReadout').textContent=`${String(Math.floor(time/60)).padStart(2,'0')}:${(time%60).toFixed(2).padStart(5,'0')}`;$('#playhead').style.left=`${time*pixelsPerSecond}px`;$('#statusText').textContent=view.warning||'就绪 · 预演与导出共用线段时间';const c=camera();$('#previewInfo').textContent=c?`${project.settings.width} × ${project.settings.height}  ·  ${(view.roots.get(c.id)?.userData.currentLens??c.lens).toFixed(0)} mm`:'';}
@@ -135,7 +135,7 @@ $('#objectList').addEventListener('click',e=>{
  renderObjects();
  $('#objectList').querySelector('[data-role-toggle="'+role+'"]').focus({preventScroll:true});
 });
-function renderObjects(){const icons={ACTOR:'♙',PROP:'◇',ENV:'▤',CAMERA:'▣',TARGET:'⊕'},groups=[['ENV','背景'],['ACTOR','人物'],['PROP','物品'],['CAMERA','摄影机'],['TARGET','视线目标']];$('#objectList').innerHTML=groups.map(([role,label])=>{const items=project.objects.filter(o=>o.role===role);return `<div class="object-group"><button class="text-btn role-toggle" data-role-toggle="${role}" aria-expanded="${!collapsedRoles.has(role)}" title="${collapsedRoles.has(role)?'展开':'收起'}${label}">${collapsedRoles.has(role)?'▶':'▼'} ${label} (${items.length})</button>${collapsedRoles.has(role)?'':items.map(o=>`<div class="object-row ${multi.has(o.id)?'selected':''}" data-object="${o.id}" role="button" tabindex="0" aria-label="选择 ${esc(o.name)}"><span class="object-icon">${icons[o.role]}</span><span class="object-name">${esc(o.name)}</span><button data-row="hide" data-id="${o.id}" title="${o.hidden?'显示':'隐藏'}">${o.hidden?'◌':'◉'}</button><button data-row="lock" data-id="${o.id}" title="${o.locked?'解锁':'锁定'}">${o.locked?'▣':'▫'}</button></div>`).join('')}</div>`;}).join('');}
+function renderObjects(){const icons={ACTOR:'♙',PROP:'◇',ENV:'▤',CAMERA:'▣',TARGET:'⊕'},groups=[['ENV','背景'],['ACTOR','人物'],['PROP','物品'],['CAMERA','摄影机'],['TARGET','视线目标']];$('#objectList').innerHTML=groups.map(([role,label])=>{const items=project.objects.filter(o=>o.role===role);return `<div class="object-group"><button class="text-btn role-toggle" data-role-toggle="${role}" aria-expanded="${!collapsedRoles.has(role)}" title="${collapsedRoles.has(role)?'展开':'收起'}${label}">${collapsedRoles.has(role)?'▶':'▼'} ${label} (${items.length})</button>${collapsedRoles.has(role)?'':items.map(o=>`<div class="object-row ${multi.has(o.id)?'selected':''}" data-object="${o.id}" role="button" tabindex="0" aria-label="选择 ${esc(o.name)}"><span class="object-icon">${icons[o.role]}</span><span class="object-name">${esc(o.name)}</span><button data-row="hide" data-id="${o.id}" title="${o.hidden?'显示':'隐藏'}${canGhostModel(o)?'模型':''}">${o.hidden?'◌':'◉'}</button><button data-row="lock" data-id="${o.id}" title="${o.locked?'解锁':'锁定'}">${o.locked?'▣':'▫'}</button></div>`).join('')}</div>`;}).join('');}
 
 function field(label,key,value,type='number',extra=''){return `<label class="field"><span>${label}</span><input data-field="${key}" type="${type}" value="${esc(value)}" ${type==='number'?'step="0.1"':''} ${extra}></label>`;}
 function selectField(label,key,values,value){return `<label class="field"><span>${label}</span><select data-field="${key}">${options(values,value)}</select></label>`;}
@@ -186,7 +186,48 @@ function closeModal(){if($('#dialog').open)$('#dialog').close();}
 async function request(path,data,raw=false){const res=await fetch(path,{method:'POST',headers:{'Content-Type':raw?'application/octet-stream':'application/json','X-Previs-Token':token},body:raw?data:JSON.stringify(data)});const result=await res.json();if(!res.ok)throw Error(result.error||'本地服务请求失败');return result;}
 async function waitJob(ident,title){jobId=ident;modal(title,'<p id="jobMessage">正在准备…</p><div class="job-progress"><i id="jobBar" style="width:2%"></i></div><p class="hint">可在本机后台完成，无需打开 Blender。</p>',[{label:'取消任务',run:()=>request(`/api/jobs/${ident}/cancel`,{}).catch(e=>toast(e.message,true))}]);for(;;){const job=await (await fetch('/api/jobs/'+ident)).json();if(jobId!==ident)return job;if($('#jobMessage'))$('#jobMessage').textContent=job.message;if($('#jobBar'))$('#jobBar').style.width=job.progress+'%';if(job.state==='done'){jobId=null;return job;}if(['error','cancelled'].includes(job.state)){jobId=null;throw Error(job.message);}await new Promise(r=>setTimeout(r,700));}}
 let defaultOutputDirectory='',chosenOutputDirectory='',legacyBackend=false,savePending=false;
+let framePreview=null,framePending=false;
+const renderedClips=new Map();
+let timelineClips=[],shownClipFrame='';
+function forgetRenderedClips(){
+ for(const {job} of renderedClips.values())request('/api/clip-release',{job}).catch(()=>{});
+ renderedClips.clear();
+ showClipFrame(null);
+ document.querySelectorAll('.video-clip.rendered').forEach(el=>{
+  el.classList.remove('rendered');
+  el.title=el.title.replace(/ · 已渲染$/,'');
+ });
+}
+function showClipFrame(url){
+ if((url||'')===shownClipFrame)return;
+ shownClipFrame=url||'';
+ const image=$('#clipFrame');
+ if(url)image.src=url;
+ else image.removeAttribute('src');
+ image.classList.toggle('hidden',!url);
+}
+function renderedAtPlayhead(){
+ return gesture||view.startEdit?null:renderedAtTime(time,view.previewSegment);
+}
+function renderedAtTime(time,segment){
+ if(!renderedClips.size)return null;
+ const clip=timelineClips.find(c=>(!segment||segment===c.sid)&&
+  time>=c.startTime&&time<c.endTime) || (time===timelineClips.at(-1)?.endTime?timelineClips.at(-1):null);
+ const result=clip&&renderedClips.get(clip.key);
+ if(!result)return null;
+ const frame=Math.min(result.frames-1,Math.max(0,Math.floor((time-clip.startTime)*project.settings.fps+1e-7)));
+ return '/api/clip-frame/'+result.job+'/'+frame;
+}
+$('#clipFrame').onerror=()=>{
+ const url=shownClipFrame;
+ if(!url||$('#clipFrame').getAttribute('src')!==url)return;
+ for(const [key,result] of renderedClips)if(url.split('/')[3]===result.job)renderedClips.delete(key);
+ showClipFrame(null);
+ renderTimeline();
+ toast('视频条缓存无法读取，请重新渲染',true);
+};
 let saveTarget=null,draftTarget=null,nativeProjectOpen=false;
+let exportClip=null;
 let exportScope='all',exportOwner=null,exportSegment=null,exportLighting=false,videoFile='',videoOverwrite=false,videoHandle=null,videoObjectURL=null;
 function currentExportSegment(){
  const shot=shotData();if(shot.cfg)return {owner:shot.owner.id,segment:shot.segment.id};
@@ -197,14 +238,92 @@ function currentExportSegment(){
  }
  const current=currentShot(project);return {owner:current?.owner.id,segment:current?.unit.id};
 }
+function frameState(){
+ return {time,revision,segment:view.previewSegment??null,camera:project.activeCamera};
+}
+function currentBlenderFrame(){
+ return framePreview&&!gesture&&Object.entries(frameState()).every(([key,value])=>framePreview.state[key]===value)?framePreview:null;
+}
+function clearBlenderFrame(){
+ if(!framePreview)return;
+ URL.revokeObjectURL(framePreview.url);
+ framePreview=null;
+ $('#blenderFrame').removeAttribute('src');
+ $('#blenderFrame').classList.add('hidden');
+ $('#preview').classList.remove('has-blender-frame');
+}
+function chooseFrameRender(){chooseRenderEnvironment(renderBlenderFrame);}
+function chooseRenderEnvironment(render){
+ if(jobId||savePending||framePending)return toast('请等待当前任务结束');
+ if(!camera())return toast('请先添加摄影机',true);
+ playing=false;
+ const sources=new Map();
+ for(const o of project.objects){
+  if(o.hidden||!o.sceneSource)continue;
+  const {asset,scene}=o.sceneSource;
+  if(!sources.has(asset))sources.set(asset,scene||o.name);
+ }
+ if(sources.size<=1){render(sources.keys().next().value??null);return;}
+ const choices=[...sources].map(([asset,label],i)=>'<option value="'+esc(asset)+'">'+esc(label)+' · '+(i+1)+'</option>').join('');
+ modal('选择场景环境','<label class="field"><span>世界环境与色彩设置</span><select id="frameEnvironment">'+choices+'</select></label>',[
+  {label:'取消',run:closeModal},{label:'渲染',primary:true,run:()=>render($('#frameEnvironment').value)}
+ ]);
+}
+async function renderBlenderFrame(sceneAsset){
+ const state=frameState();
+ framePending=true;
+ try{
+  modal('渲染当前画面','<p>正在提交 Blender 渲染…</p>');
+  const {job}=await request('/api/render-frame',{project,time:state.time,segment:state.segment,sceneAsset});
+  const result=await waitJob(job,'渲染当前画面');
+  const response=await fetch(result.result.url);
+  if(!response.ok)throw Error('无法读取 Blender 渲染结果');
+  const blob=await response.blob();
+  if(Object.entries(frameState()).some(([key,value])=>state[key]!==value)){closeModal();return;}
+  clearBlenderFrame();
+  framePreview={state,blob,url:URL.createObjectURL(blob)};
+  $('#blenderFrame').src=framePreview.url;
+  $('#blenderFrame').classList.remove('hidden');
+  $('#preview').classList.add('has-blender-frame');
+  closeModal();
+  toast('已显示当前帧的 Blender 渲染');
+ }catch(e){closeModal();toast('渲染未完成：'+e.message,true);}
+ finally{framePending=false;}
+}
+async function saveCurrentFrame(){
+ if(jobId||savePending||framePending)return toast('请等待当前任务结束');
+ if(!camera())return toast('请先添加摄影机',true);
+ playing=false;
+ const state=frameState(),rendered=currentBlenderFrame();
+ framePending=true;
+ modal('导出此帧','<p>正在准备 PNG 和保存窗口…</p>');
+ try{
+  let png=rendered?.blob;
+  const clipURL=renderedAtPlayhead();
+  if(!png&&clipURL){
+   const response=await fetch(clipURL);
+   if(!response.ok)throw Error('视频条预览已过期，请重新渲染');
+   png=await response.blob();
+  }
+  if(!png){
+   try{png=await view.exportFrame(state.time);}
+   finally{view.previewRenderer.setPixelRatio(Math.min(devicePixelRatio,2));view.resize();view.update(time);}
+  }
+  const name=project.name.replace(/[\\/:*?"<>|]/g,'_')+'-'+state.time.toFixed(3)+'s.png';
+  const result=await request('/api/save-frame?name='+encodeURIComponent(name),png,true);
+  closeModal();
+  if(result.saved)toast('PNG 已保存');
+ }catch(e){closeModal();toast('PNG 保存未完成：'+e.message,true);}
+ finally{framePending=false;}
+}
 function save(render=false,afterSave=null,scope='all',asCopy=false){
  if(jobId||savePending)return toast('请等待当前任务结束');playing=false;
  if(render){
-  const selected=scope==='current'?currentExportSegment():{};
+  const selected=scope==='clip'?{owner:exportClip.owner,segment:exportClip.sid}:scope==='current'?currentExportSegment():{};
   const entries=shotEntries(project).filter(e=>scope==='all'||e.owner.id===selected.owner&&e.unit.id===selected.segment);
   if(!entries.length)return toast(scope==='current'?'请先选中已配置镜头的路径或时间轴片段':'请先为路径设置镜头',true);
   exportScope=scope;exportOwner=selected.owner||null;exportSegment=selected.segment||null;videoFile='';videoOverwrite=false;videoHandle=null;
-  modal(scope==='all'?'导出全部视频':'导出当前视频',`<label><input id="exportLighting" type="checkbox">开启光影渲染</label><label class="field wide"><span>MP4 保存位置</span><input id="videoFile" type="text" placeholder="点击另存为，或输入完整的 .mp4 文件路径"></label><button id="chooseVideoFile">另存为…</button><p class="hint" id="videoSaveHint">只保存一个 MP4 视频文件。</p>`,[{label:'取消',run:closeModal},{label:'开始导出',primary:true,run:()=>{const file=$('#videoFile').value.trim();if(!file)return toast('请先选择 MP4 保存位置',true);videoOverwrite=file===videoFile&&videoOverwrite;videoFile=file;exportLighting=$('#exportLighting').checked;performSave(true,null,file,null,null);}}]);
+  modal(scope==='all'?'导出全部视频':scope==='clip'?'导出此视频条':'导出当前视频',`${scope==='clip'?'':'<label><input id="exportLighting" type="checkbox">开启光影渲染</label>'}<label class="field wide"><span>MP4 保存位置</span><input id="videoFile" type="text" placeholder="点击另存为，或输入完整的 .mp4 文件路径"></label><button id="chooseVideoFile">另存为…</button><p class="hint" id="videoSaveHint">只保存一个 MP4 视频文件。</p>`,[{label:'取消',run:closeModal},{label:'开始导出',primary:true,run:()=>{const file=$('#videoFile').value.trim();if(!file)return toast('请先选择 MP4 保存位置',true);videoOverwrite=file===videoFile&&videoOverwrite;videoFile=file;exportLighting=$('#exportLighting')?.checked??false;performSave(true,null,file,null,null);}}]);
   const input=$('#videoFile'),hint=$('#videoSaveHint'),button=$('#chooseVideoFile');
   input.oninput=()=>{videoOverwrite=false;videoHandle=null;};
   button.onclick=async()=>{button.disabled=true;hint.textContent='正在打开另存为窗口…';try{
@@ -224,8 +343,15 @@ function save(render=false,afterSave=null,scope='all',asCopy=false){
 async function performSave(render=false,afterSave=null,path='',target=null,saveName=null){
  if(savePending)return;savePending=true;const snapshot=clone(project),savedRevision=revision;snapshot.playhead=time;if(saveName!==null)snapshot.name=saveName;modal(render?'正在准备视频':'正在准备保存','<p>正在准备，请稍候。</p>');
  try{
-  const {job,times}=await request(render?'/api/export':'/api/save',{project:snapshot,saveTarget:target,outputDirectory:render?null:path||null,outputFile:render&&!videoHandle?path:null,browserSave:render&&!!videoHandle,overwrite:videoOverwrite,scope:exportScope,owner:exportOwner,segment:exportSegment,lighting:exportLighting});
-  if(times){const old={start:view.startEdit,segment:view.previewSegment,time};view.startEdit=null;view.previewSegment=null;let cancelled=false;modal('正在导出预览画面','<p id="captureProgress">正在准备画面…</p>',[{label:'取消',run:()=>{cancelled=true;}}]);try{for(let i=0;i<times.length;i++){if(cancelled)throw Error('已取消导出');const blob=await view.exportFrame(times[i]);await request('/api/preview-frame/'+job,blob,true);$('#captureProgress').textContent=`正在生成 ${i+1} / ${times.length} 帧`;}await request('/api/preview-finish',{job});}catch(e){await request(`/api/jobs/${job}/cancel`,{}).catch(()=>{});throw e;}finally{view.startEdit=old.start;view.previewSegment=old.segment;view.previewRenderer.setPixelRatio(Math.min(devicePixelRatio,2));view.resize();view.update(old.time);}}
+  const {job,times}=await request(render?'/api/export':'/api/save',{project:snapshot,saveTarget:target,outputDirectory:render?null:path||null,outputFile:render&&!videoHandle?path:null,browserSave:render&&!!videoHandle,overwrite:videoOverwrite,scope:exportScope,firstFrame:exportScope==='clip'?exportClip.first:null,owner:exportOwner,segment:exportSegment,lighting:exportLighting});
+  if(times){const old={start:view.startEdit,segment:view.previewSegment,time};view.startEdit=null;view.previewSegment=null;let cancelled=false;modal('正在导出预览画面','<p id="captureProgress">正在准备画面…</p>',[{label:'取消',run:()=>{cancelled=true;}}]);try{for(let i=0;i<times.length;i++){if(cancelled)throw Error('已取消导出');const url=renderedAtTime(times[i],exportScope==='all'?null:exportSegment);
+    if(!url&&exportScope==='clip')throw Error('此视频条需要重新渲染');
+    let blob;
+    if(url){
+     const response=await fetch(url);
+     if(!response.ok)throw Error('视频条缓存已过期，请重新渲染');
+     blob=await response.blob();
+    }else blob=await view.exportFrame(times[i]);await request('/api/preview-frame/'+job,blob,true);$('#captureProgress').textContent=`正在生成 ${i+1} / ${times.length} 帧`;}await request('/api/preview-finish',{job});}catch(e){await request(`/api/jobs/${job}/cancel`,{}).catch(()=>{});throw e;}finally{view.startEdit=old.start;view.previewSegment=old.segment;view.previewRenderer.setPixelRatio(Math.min(devicePixelRatio,2));view.resize();view.update(old.time);}}
   const result=await waitJob(job,render?'导出视频':'保存工程');
   if(render){let url=result.downloads.video,label=result.outputFile;
    if(videoHandle){let writer;try{writer=await videoHandle.createWritable();const response=await fetch(result.downloads.video);if(!response.ok)throw Error('读取编码视频失败');if(response.body?.pipeTo)await response.body.pipeTo(writer);else{await writer.write(await response.blob());await writer.close();}if(videoObjectURL)URL.revokeObjectURL(videoObjectURL);videoObjectURL=URL.createObjectURL(await videoHandle.getFile());url=videoObjectURL;label=videoHandle.name;}catch(e){try{await writer?.abort();}catch{}throw e;}finally{await request('/api/video-release',{job}).catch(()=>{});}}
@@ -239,7 +365,7 @@ async function performSave(render=false,afterSave=null,path='',target=null,saveN
 }
 
 async function leaveWorkspace(){
- playing=false;clearTimeout(autosaveTimer);if(db)await new Promise(resolve=>{try{const tx=db.transaction('workspace','readwrite');tx.objectStore('workspace').delete('draft');tx.objectStore('workspace').delete('saveTarget');tx.oncomplete=tx.onerror=tx.onabort=()=>resolve();}catch{resolve();}});
+ forgetRenderedClips();playing=false;clearTimeout(autosaveTimer);if(db)await new Promise(resolve=>{try{const tx=db.transaction('workspace','readwrite');tx.objectStore('workspace').delete('draft');tx.objectStore('workspace').delete('saveTarget');tx.oncomplete=tx.onerror=tx.onabort=()=>resolve();}catch{resolve();}});
  savedDraft=null;saveTarget=null;draftTarget=null;project=blank();selected=null;multi.clear();nodeIndex=-1;shotSelection=null;previewRange=null;view.startEdit=null;view.previewSegment=null;view.previewOwner=null;view.editLayer='OBJECT';$('#editLayer').value='OBJECT';time=0;undo.length=0;redo.length=0;dirty=false;revision++;view.structureKey=null;refresh();$('#dirty').textContent='未保存';showWelcome();
 }
 function closeWorkspace(){if(jobId||savePending)return toast('请等待当前任务结束');if(!dirty){leaveWorkspace();return;}modal('关闭工作区', '<p>当前工程有未保存的修改。请选择保存、放弃修改或继续编辑。</p>',[{label:'继续编辑',run:closeModal},{label:'不保存并关闭',run:leaveWorkspace},{label:'保存并关闭',primary:true,run:()=>save(false,leaveWorkspace)}]);}
@@ -274,7 +400,7 @@ async function chooseProject(){
  }catch(e){toast('打开失败：'+e.message,true);}
 }
 async function openFile(file,target=null){if(!file)return;if(file.size>(file.name.toLowerCase().endsWith('.zip')?512:128)*1024**2)return toast('文件超过大小限制',true);if(file.name.toLowerCase().endsWith('.blend'))return importBlend(file,false,1,target);if(file.name.toLowerCase().endsWith('.zip')){try{const {project:p}=await request('/api/project-bundle',file,true);loadProject(p,target);toast('已打开完整工程包');}catch(e){toast('读取失败：'+e.message,true);}return;}try{const p=JSON.parse(await file.text()),result=await request('/api/validate',{project:p});if(result.errors.length)throw Error(result.errors.join('；'));loadProject(p,target);toast('已打开 '+file.name);}catch(e){toast('读取失败：'+e.message,true);}}
-function loadProject(p,target=null){saveTarget=target;if(welcomeOpen){welcomeOpen=false;closeModal();}view.structureKey=null;project=upgradeFramework(migrate(clone(p)),p.playhead??0);shotSelection=null;view.startEdit=null;previewRange=null;view.previewSegment=null;view.previewOwner=null;view.editLayer='OBJECT';$('#editLayer').value='OBJECT';selected=null;multi.clear();nodeIndex=-1;time=project.playhead??0;undo.length=0;redo.length=0;dirty=false;revision++;refresh();saveDraft();$('#dirty').textContent='已载入';}
+function loadProject(p,target=null){forgetRenderedClips();saveTarget=target;if(welcomeOpen){welcomeOpen=false;closeModal();}view.structureKey=null;project=upgradeFramework(migrate(clone(p)),p.playhead??0);shotSelection=null;view.startEdit=null;previewRange=null;view.previewSegment=null;view.previewOwner=null;view.editLayer='OBJECT';$('#editLayer').value='OBJECT';selected=null;multi.clear();nodeIndex=-1;time=project.playhead??0;undo.length=0;redo.length=0;dirty=false;revision++;refresh();saveDraft();$('#dirty').textContent='已载入';}
 let savedDraft=null;
 function showWelcome(){welcomeOpen=true;const buttons=[{label:'新建项目',primary:true,run:()=>sceneImportDialog(true)},{label:'加载项目',run:chooseProject}];if(savedDraft)buttons.push({label:'恢复本机草稿',run:()=>{welcomeOpen=false;closeModal();loadProject(savedDraft,draftTarget);$('#dirty').textContent='本机草稿';}});modal('欢迎使用 Vantage','<p>新建项目请先导入 Blender 场景；也可以打开已有工程包。</p>'+((legacyBackend||new URLSearchParams(location.search).has('legacyPort'))?'<p class="hint warning">检测到旧版 Vantage 服务仍在运行。请先在旧窗口保存需要保留的工程，再在新版中选择“加载项目”；不同端口的本机草稿不会自动合并。</p>':''),buttons);}
 async function initDraft(){try{db=await new Promise((resolve,reject)=>{const req=indexedDB.open('previs-studio',1);req.onupgradeneeded=()=>req.result.createObjectStore('workspace');req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});const read=key=>new Promise(resolve=>{const req=db.transaction('workspace').objectStore('workspace').get(key);req.onsuccess=()=>resolve(req.result);req.onerror=()=>resolve(null);});const [p,target]=await Promise.all([read('draft'),read('saveTarget')]);draftTarget=target;if(p?.version===2){const checked=await request('/api/validate',{project:p});if(!checked.errors.length)savedDraft=p;}}catch{}showWelcome();}
@@ -315,7 +441,7 @@ const actions={
  },
  models:()=>openModelsAt(null),
  resetObject:()=>{const o=active();if(!o)return;const target=o.role==='CAMERA'?project.objects.find(x=>x.id===o.target):null;modal(o.role==='CAMERA'?'复位摄影机与目标':'复位对象',`<p>恢复到添加或导入时的位置、角度和尺寸${o.role==='CAMERA'?'、焦距与视线目标':''}，并清除此${o.role==='CAMERA'?'摄影机及目标':'对象'}的路径与关键帧。其他白模不受影响。</p><p class="hint">复位后可以用 Ctrl+Z 撤销。旧工程没有初始记录时，以升级后首次载入的状态为基准。</p>`,[{label:'取消',run:closeModal},{label:'恢复初始状态',primary:true,run:()=>{closeModal();playing=false;change(()=>{for(const c of project.objects)for(const [sid,cfg]of Object.entries(c.shots||{}))if(cfg.owner===o.id)delete c.shots[sid];resetObject(o);if(target)resetObject(target);nodeIndex=-1;time=0;});view.focus(o.id);toast('已复位，可用 Ctrl+Z 撤销');}}]);},
- closeWorkspace,addMenu:()=>$('#addMenu').classList.toggle('hidden'),addBox:()=>addObject('BOX'),open:chooseProject,import:()=>sceneImportDialog(false),save:()=>save(false),saveAs:()=>save(false,null,'all',true),export:()=>save(true),exportCurrent:()=>save(true,null,'current'),closeDialog:()=>welcomeOpen?showWelcome():closeModal(),
+ renderFrame:chooseFrameRender,closeWorkspace,addMenu:()=>$('#addMenu').classList.toggle('hidden'),addBox:()=>addObject('BOX'),open:chooseProject,import:()=>sceneImportDialog(false),save:()=>save(false),saveAs:()=>save(false,null,'all',true),export:()=>save(true),exportCurrent:()=>save(true,null,'current'),closeDialog:()=>welcomeOpen?showWelcome():closeModal(),
  new:()=>modal('新建预演',`<p>新建时需要先选择场景。${dirty?'请先保存需要保留的修改。':''}</p>`,[{label:'取消',run:closeModal},{label:'继续',primary:true,run:()=>sceneImportDialog(true)}]),
  undo:()=>{if(!undo.length)return;redo.push(clone(project));project=undo.pop();selected=project.objects.some(o=>o.id===selected)?selected:null;multi=new Set(selected?[selected]:[]);markDirty();refresh();},
  redo:()=>{if(!redo.length)return;undo.push(clone(project));project=redo.pop();markDirty();refresh();},
@@ -335,7 +461,7 @@ for(const kind of ['angles','lenses','rolls'])actions['key-'+kind]=()=>{const o=
 function setTool(tool){const o=active();if(tool==='path'&&(!o||o.locked||o.role==='ENV'))return toast('请先选中未锁定的人物、物品、摄影机或目标');if(tool==='path'){const aim=freeAimShot(project,selected);if(aim&&!aim.cfg.aimMotion)change(()=>ensureAimMotion(aim));if(view.view==='FREE')setView('TOP');}view.setTool(tool);$$('[data-tool]').forEach(b=>b.classList.toggle('active',b.dataset.tool===tool));$('#selectionHint').textContent=tool==='path'?'单击添加路径节点 · Esc 结束布点':tool==='orbit'?'拖动目标点周围的旋转圆环，改变机位':'拖动彩色轴自由移动 · 三视图方向键微调';if(tool==='path')setTab('path');}
 function setView(mode){view.setView(mode);$$('[data-view]').forEach(b=>b.classList.toggle('active',b.dataset.view===mode));$('#viewName').textContent={TOP:'俯视 · XY',FRONT:'前视 · XZ',SIDE:'侧视 · YZ',FREE:'自由视图'}[mode];}
 
-document.addEventListener('click',e=>{const b=e.target.closest('button');if(b){if(b.dataset.action){if(view.editLayer==='CAMERA'&&active()&&!['CAMERA','TARGET'].includes(active().role)&&['delete','resetPath','deletePathPoint','addNode','resetObject','group','proxy','calibrate'].includes(b.dataset.action))return toast('请切换物品图层编辑');if(b.dataset.action==='deleteKey'){const o=active();change(()=>o[b.dataset.kind].splice(Number(b.dataset.index),1));return;}if(b.dataset.action==='seekKey'){const key=active()[b.dataset.kind][Number(b.dataset.index)];setTime(key.time);return;}actions[b.dataset.action]?.();return;}if(b.dataset.add){addObject(b.dataset.add);return;}if(b.dataset.tool){setTool(b.dataset.tool);return;}if(b.dataset.view){setView(b.dataset.view);return;}if(b.dataset.tab){setTab(b.dataset.tab);return;}if(b.dataset.lens){fieldChange('lens',Number(b.dataset.lens));return;}if(b.dataset.row){change(()=>{const o=project.objects.find(o=>o.id===b.dataset.id);o[b.dataset.row==='lock'?'locked':'hidden']=!o[b.dataset.row==='lock'?'locked':'hidden'];});return;}}
+document.addEventListener('click',e=>{const b=e.target.closest('button');if(b){if(b.dataset.action){if(view.editLayer==='CAMERA'&&active()&&!['CAMERA','TARGET'].includes(active().role)&&['delete','resetPath','deletePathPoint','addNode','resetObject','group','proxy','calibrate'].includes(b.dataset.action))return toast('请切换物品图层编辑');if(b.dataset.action==='deleteKey'){const o=active();change(()=>o[b.dataset.kind].splice(Number(b.dataset.index),1));return;}if(b.dataset.action==='seekKey'){const key=active()[b.dataset.kind][Number(b.dataset.index)];setTime(key.time);return;}actions[b.dataset.action]?.();return;}if(b.dataset.add){addObject(b.dataset.add);return;}if(b.dataset.tool){setTool(b.dataset.tool);return;}if(b.dataset.view){setView(b.dataset.view);return;}if(b.dataset.tab){setTab(b.dataset.tab);return;}if(b.dataset.lens){fieldChange('lens',Number(b.dataset.lens));return;}if(b.dataset.row){change(()=>{const o=project.objects.find(o=>o.id===b.dataset.id);if(b.dataset.row==='lock')o.locked=!o.locked;else toggleVisibility(o);});return;}}
  const row=e.target.closest('[data-object]');if(row){select(row.dataset.object,e.shiftKey);return;}const n=e.target.closest('[data-node]');if(n){nodeIndex=Number(n.dataset.node);view.select(selected,nodeIndex);view.refreshPaths();renderInspector();return;}const track=e.target.closest('[data-track]');if(track)select(track.dataset.track,false,Number(e.target.closest('[data-segment]')?.dataset.segment??-1));if(!e.target.closest('#addMenu,#addBtn'))$('#addMenu').classList.add('hidden');});
 function validateNumberControl(input){
  if(!['number','range'].includes(input.type))return true;
@@ -381,7 +507,7 @@ let scrubbing=false;$('#tracks').addEventListener('pointerdown',e=>{if(e.button!
 document.addEventListener('keydown',e=>{if(document.querySelector('.focus-picker-dialog[open]')){if(e.ctrlKey&&e.key.toLowerCase()==='s')e.preventDefault();return;}if(e.ctrlKey&&e.key.toLowerCase()==='s'){e.preventDefault();save(false,null,'all',e.shiftKey);return;}if(['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName)||e.target.isContentEditable||$('#dialog').open||document.querySelector('#modelLibrary[open]'))return;if(keyboardMove(e))return;if(e.code==='Space'){e.preventDefault();actions.play();}if(e.ctrlKey&&e.key.toLowerCase()==='z'){e.preventDefault();actions[e.shiftKey?'redo':'undo']();}if(e.key==='Escape'){setTool('select');$('#addMenu').classList.add('hidden');}if(e.key.toLowerCase()==='q')setTool('select');if(e.key.toLowerCase()==='w')setTool('translate');if(e.key.toLowerCase()==='e')setTool('rotate');if(e.key.toLowerCase()==='f')view.focus(selected);if(e.key==='Delete')deleteSelected();});
 window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
 window.addEventListener('error',e=>toast('界面发生错误：'+e.message,true));
-refresh();let last=performance.now();function animate(now){const dt=Math.min(.1,(now-last)/1000);last=now;if(playing){let t=time+dt;const end=previewRange?.end??project.settings.duration,start=previewRange?.start??0;if(t>=end){if(loop&&!previewRange)t=start+(t-start)%(end-start);else{t=end;playing=false;}}setTime(t);}else view.update(time);if(playing&&view.warning){playing=false;toast(view.warning,true);}syncControlFields();view.render();$('#playBtn').textContent=playing?'Ⅱ':'▶';$('#previewPlay').textContent=playing?'Ⅱ':'▶';$('#preview').classList.toggle('is-playing',playing);$('#previewPlay').setAttribute('aria-label',playing?'暂停视频':'播放完整视频');requestAnimationFrame(animate);}requestAnimationFrame(animate);
+refresh();let last=performance.now();function animate(now){const dt=Math.min(.1,(now-last)/1000);last=now;if(playing){let t=time+dt;const end=previewRange?.end??project.settings.duration,start=previewRange?.start??0;if(t>=end){if(loop&&!previewRange)t=start+(t-start)%(end-start);else{t=end;playing=false;}}setTime(t);}else view.update(time);if(playing&&view.warning){playing=false;toast(view.warning,true);}syncControlFields();if(framePreview&&!currentBlenderFrame())clearBlenderFrame();showClipFrame(framePreview?null:renderedAtPlayhead());view.render();$('#playBtn').textContent=playing?'Ⅱ':'▶';$('#previewPlay').textContent=playing?'Ⅱ':'▶';$('#preview').classList.toggle('is-playing',playing);$('#previewPlay').setAttribute('aria-label',playing?'暂停视频':'播放完整视频');requestAnimationFrame(animate);}requestAnimationFrame(animate);
 try{const status=await (await fetch('/api/status')).json();token=status.token;defaultOutputDirectory=status.defaultOutputDirectory||'';legacyBackend=!modernWorkflow(status);nativeProjectOpen=status.capabilities?.includes('project-overwrite');$('#engineStatus').innerHTML=`<i style="${status.engineReady?'':'background:#e7b86a'}"></i>${legacyBackend?'后台版本过旧，请重新启动':status.engineReady?'本地引擎就绪':'引擎未连接'}`;$('#engineStatus').title='Vantage '+(status.version||'');await initDraft();}catch(e){toast('本地服务连接失败，请重新启动工作台',true);}
 
 function shotData(){if(!shotSelection)return {};const owner=project.objects.find(o=>o.id===shotSelection.owner),c=project.objects.find(o=>o.id===shotSelection.camera),ss=owner?units(owner):[],index=ss.findIndex(s=>s.id===shotSelection.sid);return {owner,c,ss,index,segment:ss[index],cfg:c?.shots?.[shotSelection.sid]};}
@@ -435,7 +561,7 @@ function keyboardMove(e){
  });
  return true;
 }
-function objectMenu(objectId,x,y){const o=project.objects.find(v=>v.id===objectId);if(!o||['CAMERA','TARGET'].includes(o.role))return;select(o.id);document.querySelector('.segment-menu')?.remove();const menu=document.createElement('div');menu.className='segment-menu';menu.style.left=Math.min(x,innerWidth-220)+'px';menu.style.top=Math.min(y,innerHeight-280)+'px';const add=(label,fn)=>{const b=document.createElement('button');b.textContent=label;b.onclick=()=>{menu.remove();fn();};menu.append(b);};if(canColor(o))add('设置定位颜色',()=>colorDialog(o));if(canGround(o))add('接触地面',()=>{playing=false;change(()=>groundObject(o,new Evaluator(project).pose(o,time),sceneGridMetrics(project).ground));});if(o.role!=='ENV'){add('设置运动轨迹',()=>{setTab('path');setTool('path');});add('导入动作并绑定线段',()=>{const list=edges(o);if(!list.length)return toast('请先为对象创建运动线段',true);modal('选择绑定线段',`<label class="field"><span>运动线段</span><select id="motionSegment">${list.map((edge,i)=>`<option value="${esc(edge.id)}">线段 ${i+1} · ${edge.startTime.toFixed(2)}–${edge.endTime.toFixed(2)} 秒</option>`).join('')}</select></label><p class="hint">动作文件需要与目标模型使用相同的骨架和绑定姿态。</p>`,[{label:'取消',run:closeModal},{label:'选择 GLB 动作',primary:true,run:()=>{$('#motionFile').dataset.owner=o.id;$('#motionFile').dataset.segment=$('#motionSegment').value;closeModal();$('#motionFile').click();}}]);});}for(const [role,label] of [['ACTOR','人物'],['PROP','物品'],['ENV','背景']])if(o.sceneSource?.kind!=='LIGHT'&&o.role!==role)add('设为'+label,()=>fieldChange('role',role));const geo=geometrySpecification(o);if(geo)add('设计尺寸',()=>geometryDialog(geo.shape,null,o,geo));if(o.modelSource){add('校准运动原点',()=>change(()=>calibrateOrigin(project,o)));add('校准正面 +90°',()=>actions.calibrate());}add(o.hidden?'显示':'隐藏',()=>change(()=>o.hidden=!o.hidden));add(o.locked?'解锁':'锁定',()=>change(()=>o.locked=!o.locked));add('复制',()=>duplicateObject(o));add('删除',()=>deleteSelected());document.body.append(menu);const dismiss=e=>{if(!menu.contains(e.target)){menu.remove();document.removeEventListener('pointerdown',dismiss);}};setTimeout(()=>document.addEventListener('pointerdown',dismiss),0);}
+function objectMenu(objectId,x,y){const o=project.objects.find(v=>v.id===objectId);if(!o||['CAMERA','TARGET'].includes(o.role))return;select(o.id);document.querySelector('.segment-menu')?.remove();const menu=document.createElement('div');menu.className='segment-menu';const add=(label,fn)=>{const b=document.createElement('button');b.textContent=label;b.onclick=()=>{menu.remove();fn();};menu.append(b);};if(canColor(o))add('设置定位颜色',()=>colorDialog(o));if(canGround(o))add('接触地面',()=>{playing=false;change(()=>groundObject(o,new Evaluator(project).pose(o,time),sceneGridMetrics(project).ground));});if(o.role!=='ENV'){add('设置运动轨迹',()=>{setTab('path');setTool('path');});add('导入动作并绑定线段',()=>{const list=edges(o);if(!list.length)return toast('请先为对象创建运动线段',true);modal('选择绑定线段',`<label class="field"><span>运动线段</span><select id="motionSegment">${list.map((edge,i)=>`<option value="${esc(edge.id)}">线段 ${i+1} · ${edge.startTime.toFixed(2)}–${edge.endTime.toFixed(2)} 秒</option>`).join('')}</select></label><p class="hint">动作文件需要与目标模型使用相同的骨架和绑定姿态。</p>`,[{label:'取消',run:closeModal},{label:'选择 GLB 动作',primary:true,run:()=>{$('#motionFile').dataset.owner=o.id;$('#motionFile').dataset.segment=$('#motionSegment').value;closeModal();$('#motionFile').click();}}]);});}for(const [role,label] of [['ACTOR','人物'],['PROP','物品'],['ENV','背景']])if(o.sceneSource?.kind!=='LIGHT'&&o.role!==role)add('设为'+label,()=>fieldChange('role',role));const geo=geometrySpecification(o);if(geo)add('设计尺寸',()=>geometryDialog(geo.shape,null,o,geo));if(o.modelSource){add('校准运动原点',()=>change(()=>calibrateOrigin(project,o)));add('校准正面 +90°',()=>actions.calibrate());}add((o.hidden?'显示':'隐藏')+(canGhostModel(o)?'模型':''),()=>change(()=>toggleVisibility(o)));add(o.locked?'解锁':'锁定',()=>change(()=>o.locked=!o.locked));add('复制',()=>duplicateObject(o));add('删除',()=>deleteSelected());document.body.append(menu);menu.style.left=Math.max(0,Math.min(x,innerWidth-menu.offsetWidth))+'px';menu.style.top=Math.max(0,Math.min(y,innerHeight-menu.offsetHeight))+'px';const dismiss=e=>{if(!menu.contains(e.target)){menu.remove();document.removeEventListener('pointerdown',dismiss);}};setTimeout(()=>document.addEventListener('pointerdown',dismiss),0);}
 function openModelsAt(placement){ensureObjectLayer();playing=false;openModelLibrary(async (name,scale=1)=>{const {job}=await request('/api/models/import',{name});const result=await waitJob(job,'导入模型');closeModal();const os=result.result.objects;for(const o of os){o.role='ACTOR';o.lockZ=true;o.orientation='PATH';o.frontAxis='-Y';o.scale=[scale,scale,scale];o.modelSource.unitScale=scale;if(placement)o.position=[placement[0],placement[1],0];}const checked=await request('/api/validate',{project:{...project,objects:[...project.objects,...os.map(o=>({...o,id:'check-'+id()}))]}});if(checked.errors.length)throw Error(checked.errors.join('；'));change(()=>{for(const o of os)o.id=id();project.objects.push(...os);selected=os[0].id;multi=new Set([selected]);tab='object';});setView('FREE');view.focus(selected);toast('模型已加入，可撤销；请保存工程');});}
 function emptyCreateMenu(point,x,y){
  document.querySelector('.segment-menu')?.remove();const menu=document.createElement('div');menu.className='segment-menu';menu.style.left=Math.min(x,innerWidth-220)+'px';menu.style.top=Math.min(y,innerHeight-200)+'px';
@@ -568,8 +694,85 @@ actions.editAimPath=()=>{
 };
 actions.editCameraPath=()=>{selected=camera().id;setTab('path');view.startEdit=null;view.select(selected,0);};
 
-function videoTrack(){return '<div class="track-lane video-track">'+shotEntries(project).map(e=>`<div class="segment video-clip" data-clip="${e.unit.id}" data-owner="${e.owner.id}" data-camera="${e.c.id}" title="${esc(e.owner.name)} · ${e.unit.startTime.toFixed(2)}–${e.unit.endTime.toFixed(2)} 秒；右键编辑" style="left:${e.unit.startTime*pixelsPerSecond}px;width:${(e.unit.endTime-e.unit.startTime)*pixelsPerSecond}px">${e.unit.kind==='DWELL'?'停留':'镜头'} · ${(e.unit.endTime-e.unit.startTime).toFixed(2)}s</div>`).join('')+'</div>';}
-$('#tracks').addEventListener('contextmenu',e=>{const clip=e.target.closest('[data-clip]');if(clip){e.preventDefault();openShot(clip.dataset.owner,clip.dataset.clip,clip.dataset.camera);}});
+function videoTrack(){
+ const fps=project.settings.fps;
+ timelineClips=shotEntries(project).flatMap(({unit,cfg,c,owner})=>{
+  const count=Math.max(1,Math.ceil((unit.endTime-unit.startTime)*fps-1e-8));
+  const cuts=(cfg.clipCuts||[]).map(t=>Math.round(t*fps)).filter(i=>i>0&&i<count);
+  const bounds=[...new Set([0,...cuts,count])].sort((a,b)=>a-b);
+  return bounds.slice(0,-1).map((first,i)=>({
+   key:JSON.stringify([c.id,unit.id,first]),sid:unit.id,owner:owner.id,camera:c.id,cfg,first,last:bounds[i+1],
+   startTime:unit.startTime+first/fps,endTime:bounds[i+1]===count?unit.endTime:unit.startTime+bounds[i+1]/fps,
+   unitStart:unit.startTime,label:unit.kind==='DWELL'?'停留':'镜头',name:owner.name
+  }));
+ });
+ return '<div class="track-lane video-track">'+timelineClips.map((c,i)=>{
+  const cached=renderedClips.has(c.key);
+  return `<div class="segment video-clip ${cached?'rendered':''}" data-clip="${esc(c.sid)}" data-owner="${esc(c.owner)}" data-camera="${esc(c.camera)}" data-piece="${i}" title="${esc(c.name)} · ${c.startTime.toFixed(2)}–${c.endTime.toFixed(2)} 秒${cached?' · 已渲染':''}" style="left:${c.startTime*pixelsPerSecond}px;width:${(c.endTime-c.startTime)*pixelsPerSecond}px">${c.label} · ${(c.endTime-c.startTime).toFixed(2)}s</div>`;
+ }).join('')+'</div>';
+}
+function splitClip(clip){
+ const fps=project.settings.fps;
+ const cut=Math.round((time-clip.unitStart)*fps);
+ if(cut<=clip.first||cut>=clip.last)return toast('请把播放头移到此视频条内的切分帧',true);
+ change(()=>{
+  clip.cfg.clipCuts=[...(clip.cfg.clipCuts||[]),cut/fps].sort((a,b)=>a-b);
+  const previous=renderedClips.get(clip.key);
+  if(previous){
+   renderedClips.delete(clip.key);
+   request('/api/clip-release',{job:previous.job}).catch(()=>{});
+  }
+ },true);
+}
+async function renderClip(clip,sceneAsset){
+ const stamp=revision;
+ framePending=true;
+ try{
+  modal('渲染视频条','<p>正在提交所选视频条…</p>');
+  const {job,frames}=await request('/api/render-clip',{project,segment:clip.sid,owner:clip.owner,firstFrame:clip.first,sceneAsset});
+  await waitJob(job,'渲染视频条');
+  closeModal();
+  if(stamp!==revision){await request('/api/clip-release',{job});return;}
+  const previous=renderedClips.get(clip.key);
+  renderedClips.set(clip.key,{job,frames});
+  if(previous)request('/api/clip-release',{job:previous.job}).catch(()=>{});
+  clearBlenderFrame();
+  view.startEdit=null;view.previewSegment=clip.sid;view.previewOwner=null;
+  previewRange=null;
+  setTime(clip.startTime);
+  renderTimeline();
+  toast('视频条已渲染，共 '+frames+' 帧');
+ }catch(e){closeModal();toast('视频条渲染未完成：'+e.message,true);}
+ finally{framePending=false;}
+}
+$('#tracks').addEventListener('contextmenu',e=>{
+ e.preventDefault();
+ document.querySelector('.segment-menu')?.remove();
+ const clip=e.target.closest('[data-clip]'),menu=document.createElement('div');
+ menu.className='segment-menu';
+ const add=(label,run)=>{
+  const button=document.createElement('button');
+  button.textContent=label;
+  button.onclick=()=>{menu.remove();run();};
+  menu.append(button);
+ };
+ add('导出此帧（PNG）',saveCurrentFrame);
+ if(clip){
+  const piece=timelineClips[Number(clip.dataset.piece)];
+  add('在播放头处切分',()=>splitClip(piece));
+  add('渲染此视频条',()=>chooseRenderEnvironment(asset=>renderClip(piece,asset)));
+  if(renderedClips.has(piece.key))add('导出此视频条（MP4）',()=>{
+   exportClip=piece;
+   save(true,null,'clip');
+  });
+  add('编辑镜头',()=>openShot(piece.owner,piece.sid,piece.camera));
+ }
+ document.body.append(menu);
+ menu.style.left=Math.max(0,Math.min(e.clientX,innerWidth-menu.offsetWidth))+'px';
+ menu.style.top=Math.max(0,Math.min(e.clientY,innerHeight-menu.offsetHeight))+'px';
+ const dismiss=event=>{if(!menu.contains(event.target)){menu.remove();document.removeEventListener('pointerdown',dismiss);}};
+ document.addEventListener('pointerdown',dismiss);
+});
 function layoutInspector(){
  const el=$('#inspector'),expanded=document.body.classList.contains('inspector-expanded');
  const sections=[...el.querySelectorAll('.section')];sections.forEach((s,i)=>{s.dataset.layoutOrder??=i;});sections.sort((a,b)=>Number(a.dataset.layoutOrder)-Number(b.dataset.layoutOrder));

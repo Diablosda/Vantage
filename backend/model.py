@@ -12,7 +12,7 @@ def validate(project,export=False,asset_root=None):
     errors=[]
     if not isinstance(project,dict) or project.get('version')!=2:return ['不是此工作台的有效工程文件']
     objects=project.get('objects',[]);settings=project.get('settings',{})
-    if not isinstance(objects,list) or len(objects)>300:return ['对象数量超过轻量场景上限（300）']
+    if not isinstance(objects,list):return ['工程对象列表无效']
     def finite(n):return isinstance(n,(int,float)) and not isinstance(n,bool) and math.isfinite(n)
     def vector(v,size=3):return isinstance(v,list) and len(v)==size and all(finite(x) for x in v)
     for key,lo,hi in [('fps',1,120),('duration',.05,600),('width',16,8192),('height',16,8192),('grid',.001,100)]:

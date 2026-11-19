@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {gridMove,translateObjectAndPath,canColor} from '../web/object_tools.js';
+import {gridMove,translateObjectAndPath,canColor,isEditorGhost,toggleVisibility} from '../web/object_tools.js';
 test('direction keys move one grid interval on ground, oriented to view',()=>{
  assert.deepEqual(gridMove('ArrowUp',.5,[1,0]),[0,.5,0]);assert.deepEqual(gridMove('ArrowLeft',.5,[1,0]),[-.5,0,0]);
  assert.deepEqual(gridMove('ArrowRight',2,[0,1]),[0,2,0]);assert.deepEqual(gridMove('ArrowUp',2,[0,1]),[-2,0,0]);
@@ -11,3 +11,18 @@ test('moving a tracked character translates all path points and keeps their heig
  const before=structuredClone(o);assert.throws(()=>translateObjectAndPath(o,[1e9,0,0]));assert.deepEqual(o,before);
 });
 test('locator color applies to created white models only',()=>{const o={role:'ACTOR',parts:[{}]};assert.equal(canColor(o),true);assert.equal(canColor({...o,modelSource:{}}),false);assert.equal(canColor({...o,sceneSource:{}}),false);assert.equal(canColor({...o,role:'CAMERA'}),false);});
+
+test('hiding a model leaves a pickable editor ghost and preserves previous project visibility',()=>{
+ for(const role of ['ACTOR','PROP','ENV','CAMERA','TARGET']){
+  const object={role,hidden:false};
+  toggleVisibility(object);
+  assert.equal(object.hidden,true);
+  assert.equal(isEditorGhost(object),role==='ACTOR'||role==='PROP');
+  toggleVisibility(object);
+  assert.deepEqual(object,{role,hidden:false});
+ }
+ const proxySource={role:'PROP',hidden:true};
+ assert.equal(isEditorGhost(proxySource),false);
+ toggleVisibility(proxySource);
+ assert.equal(proxySource.hidden,false);
+});

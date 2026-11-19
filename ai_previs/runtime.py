@@ -63,7 +63,7 @@ def portable_rotation(state):
     return Quaternion((w,x,y,z))
 
 
-def evaluate(scene, strict=False):
+def evaluate(scene, strict=False, *, scene_time=None, camera_segment=None):
     global busy
     if busy or not scene.previs.enabled: return
     busy = True
@@ -75,12 +75,12 @@ def evaluate(scene, strict=False):
         portable=portable_evaluator(scene)
         if portable:
             from backend.segments import shot_range
-            time += shot_range(portable.p)[0]
+            time = time + shot_range(portable.p)[0] if scene_time is None else scene_time
             for obj in objs:
                 data=portable.objects.get(obj.get('previs_id'))
                 if not data:continue
                 try:
-                    state=portable.camera(data,time) if data['role']=='CAMERA' else portable.pose(data,time)
+                    state=portable.camera(data,time,camera_segment) if data['role']=='CAMERA' else portable.pose(data,time)
                     obj.location=state['position'];obj.rotation_euler=portable_rotation(state).to_euler();obj.scale=data['scale']
                     if data['role']=='CAMERA':obj.data.lens=state['lens']
                 except ValueError as exc:errors.append(str(exc))
