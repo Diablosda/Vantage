@@ -4,13 +4,13 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'tests'))
 from test_web_backend import fixture
-work=ROOT/'.release-work'/'acceptance-2.1.4'
+work=ROOT/'.release-work'/'acceptance-2.1.5'
 if work.exists():raise SystemExit('Choose a fresh acceptance directory')
 work.mkdir(parents=True);install=work/'Installed';data=work/'UserData';cache=work/'UserCache';output=work/'Videos';projects=work/'Projects'
 for p in [data,cache,output,projects]:p.mkdir()
 (data/'keep-user-data.txt').write_text('must survive uninstall')
 (output/'desktop.ini').write_text('system metadata')
-setup=ROOT/'dist'/'Vantage-2.1.4-Setup.exe'
+setup=ROOT/'dist'/'Vantage-2.1.5-Setup.exe'
 result=subprocess.run([str(setup),'/S','/TEST=1','/D='+str(install)],timeout=180);assert result.returncode==0
 assert (install/'Vantage.exe').is_file() and (install/'runtime/blender/blender.exe').is_file()
 (install/'keep-custom-file.txt').write_text('uninstaller must preserve unknown files')
@@ -29,7 +29,7 @@ try:
  for _ in range(100):
   try:status=json.load(opener.open(f'http://127.0.0.1:{port}/api/status',timeout=1));break
   except OSError:time.sleep(.1)
- assert status and status['version']=='2.1.4' and status['engineReady']
+ assert status and status['version']=='2.1.5' and status['engineReady']
  assert Path(status['defaultOutputDirectory'])==data/'Projects'
  assert json.load(opener.open(f'http://127.0.0.1:{port}/api/models'))=={'models':[]}
  p=fixture();p['objects'][0]['locatorColor']='#ff2040';p['objects'][0]['nodes'].insert(1,dict(position=[.325,0,0],time=.2,dwell=0,radius=0,easing='LINEAR'));p['settings']['snap']=True;source=work/'fixture.json';source.write_text(json.dumps(p))

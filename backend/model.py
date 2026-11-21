@@ -29,6 +29,9 @@ def validate(project,export=False,asset_root=None):
     by_id={o['id']:o for o in objects};vertices=0
     for o in objects:
         name=str(o.get('name','对象'))[:80]
+        order=o.get('videoTracks',[])
+        if not isinstance(order,list) or not all(isinstance(owner,str) for owner in order) or len(set(order))!=len(order):
+            return [name+'：视频轨道顺序无效']
         if o.get('timing')=='SPEED' and (not finite(o.get('speed')) or o['speed']<=0):errors.append(name+'：路径速度无效')
         if 'controlScale' in o and (not finite(o['controlScale']) or o['controlScale']<=0):errors.append(name+'：控制点比例无效')
         if o.get('role') not in ('ACTOR','PROP','ENV','CAMERA','TARGET'):errors.append(name+'：对象类型无效')

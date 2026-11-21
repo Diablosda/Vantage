@@ -90,3 +90,10 @@ body{height:100dvh;min-height:0;overflow:hidden}
 
 .video-clip.rendered{border-top:3px solid #a9e851}
 .video-clip.rendered::before{content:"✓ "}
+
+.video-clip[aria-current="true"]{outline:1px solid var(--green);outline-offset:-2px}
+
+.track-label[draggable="true"]{cursor:grab}
+.track-label[draggable="true"]:active{cursor:grabbing}
+
+.video-clip.unconfigured{background:#a4bd98;color:#172916;border-color:#c4d7ba}

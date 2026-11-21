@@ -57,7 +57,7 @@ def path_errors(o,full=False):
   if distance(s['a']['position'],s['b']['position'])<=EPS:errors.append('线段长度必须大于零')
   if abs(s['startTime']-s['a']['time']-s['a'].get('dwell',0))>EPS or abs(s['endTime']-s['b']['time'])>EPS:errors.append('线段时间与端点不一致')
   if i and s['startTime']<ss[i-1]['endTime']-EPS:errors.append('线段时间重叠')
-  if full and i and s['start']!=ss[i-1]['end']:errors.append('路径不连续：请修复连接或单独预演线段')
+  if full and i and not s.get('cutStart') and s['start']!=ss[i-1]['end']:errors.append('路径不连续：请修复连接或单独预演线段')
  return list(dict.fromkeys(errors))
 class SegmentMotion:
  def __init__(self,o):
@@ -69,6 +69,9 @@ class SegmentMotion:
     a,b,c=prev['a']['position'],n['position'],s['b']['position'];u,v=unit(sub(a,b)),unit(sub(c,b));r=min(n.get('radius',.5),distance(a,b)*.49,distance(b,c)*.49)
     if r>EPS and abs(dot(u,v))<.99999:corners[n['id']]=(add(b,mul(u,r)),b,add(b,mul(v,r)))
   for s in self.segments:
+   if s.get('cutShape'):
+    self.arcs.append(g.Arc([add(add(mul(s['a']['position'],1-f),mul(s['b']['position'],f)),offset) for f,*offset in s['cutShape']]))
+    continue
    points=[g.bezier(*corners[s['start']],.5+j/128) for j in range(65)] if s['start'] in corners else [s['a']['position']]
    points.extend([g.bezier(*corners[s['end']],j/128) for j in range(65)] if s['end'] in corners else [s['b']['position']]);self.arcs.append(g.Arc(points))
  def at(self,t,only=None):
@@ -76,7 +79,9 @@ class SegmentMotion:
   for s,arc in zip(self.segments,self.arcs):
    if only and s['id']!=only:continue
    if t<s['startTime'] and last:return last
-   f=g.ease((t-s['startTime'])/max(EPS,s['endTime']-s['startTime']),s['b'].get('easing'));p=arc.at(f)[0];tangent=unit(sub(arc.at(min(1,f+.001))[0],arc.at(max(0,f-.001))[0]));last=(p,tangent)
+   dt=max(0,min(1,(t-s['startTime'])/(s['endTime']-s['startTime'])));a,b=s.get('easeRange',[0,1]);mode=s['b'].get('easing')
+   lo,hi=g.ease(a,mode),g.ease(b,mode);f=(g.ease(a+(b-a)*dt,mode)-lo)/(hi-lo) if hi>lo else dt
+   p=arc.at(f)[0];tangent=unit(sub(arc.at(min(1,f+.001))[0],arc.at(max(0,f-.001))[0]));last=(p,tangent)
    if t<s['endTime']:return last
   return last or (self.object['nodes'][0]['position'] if self.object.get('nodes') else self.object['position'],(0,0,0))
 class Evaluator:
@@ -126,8 +131,9 @@ class Evaluator:
     velocity=mul(unit(sight),cfg['direction']*cfg['speed'])
    else:velocity['XYZ'.index(cfg['axis'])]=cfg['direction']*cfg['speed']
    position=add(add(start['position'],sub(focus,f0)),mul(velocity,dt))
+  local_start=s['startTime']
   if cfg.get('mode')=='FREE' and cfg.get('freeMotion',{}).get('segments'):
-   path=SegmentMotion(cfg['freeMotion']);position=add(position,sub(path.at(s['startTime']+dt)[0],path.at(s['startTime'])[0]))
+   path=SegmentMotion(cfg['freeMotion']);position=add(position,sub(path.at(local_start+dt)[0],path.at(local_start)[0]))
   delta=cfg.get('rotationDelta',[0,0,0]);roll=start.get('roll',0) if inherited else cfg.get('roll',start.get('roll',0))
   state=dict(position=position,focus=focus,up=up,lens=cfg['lens']+(cfg['lensEnd']-cfg['lens'])*progress if 'lensEnd' in cfg else cfg.get('lens',start.get('lens',c['lens'])),roll=roll+delta[2]*progress)
   if free:
@@ -137,8 +143,8 @@ class Evaluator:
    state['cameraRotation']=start.get('quaternion') or qrot(c['rotation']);state['warning']='摄影机与焦点重合，暂时保留起始朝向；可继续移动机位'
   if not all(math.isfinite(v) and abs(v)<=1e6 for v in position) or not math.isfinite(state['lens']) or not 1<=state['lens']<=1000:raise ValueError('相机参数无效')
   if cfg.get('mode')=='FREE' and cfg.get('freeMotion'):
-   m=cfg['freeMotion'];state['lens']=key(m.get('lenses',[]),s['startTime']+dt,state['lens'])
-   if m.get('angles'):state['cameraRotation']=key(m['angles'],s['startTime']+dt,state.get('cameraRotation'),True)
+   m=cfg['freeMotion'];state['lens']=key(m.get('lenses',[]),local_start+dt,state['lens'])
+   if m.get('angles'):state['cameraRotation']=key(m['angles'],local_start+dt,state.get('cameraRotation'),True)
   if cfg.get('mode')=='FREE' and cfg.get('aimMotion',{}).get('segments'):
    state['focus']=SegmentMotion(cfg['aimMotion']).at(dt)[0]
    if distance(position,state['focus'])>=EPS:
@@ -163,6 +169,14 @@ def validate_shots(project,export=False):
   if not isinstance(ss,list) or not isinstance(shots,dict):return ['线段或镜头数据类型无效']
   if any(not isinstance(s,dict) or not all(isinstance(s.get(k),str) for k in ('id','start','end')) for s in ss):return ['线段标识无效']
   if any(not isinstance(cfg,dict) for cfg in shots.values()):return ['镜头配置数据类型无效']
+  for s in ss:
+   shape=s.get('cutShape')
+   if shape is not None and (not isinstance(shape,list) or not 2<=len(shape)<=200 or any(not isinstance(row,list) or len(row)!=4 or not all(type(v) in (float,int) and math.isfinite(v) for v in row) or not 0<=row[0]<=1 for row in shape)):return ['裁切路径形状无效']
+   limits=s.get('easeRange',[0,1])
+   if not isinstance(limits,list) or len(limits)!=2 or not all(type(v) in (float,int) for v in limits) or not 0<=limits[0]<limits[1]<=1:return ['裁切路径时间无效']
+   if type(s.get('motionOffset',0)) not in (float,int) or not 0<=s.get('motionOffset',0)<=600:return ['动作起始时间无效']
+   cuts=s.get('clipCuts',[])
+   if not isinstance(cuts,list) or any(type(t) not in (float,int) or not 0<t<=600 for t in cuts):return ['视频切点无效']
  all_ids=[s['id'] for o in project['objects'] for s in o.get('segments',[])]
  if len(set(all_ids))!=len(all_ids):return ['线段标识不能跨对象重复']
  objects={o['id']:o for o in project['objects']};segments={s['id']:(o,s) for o in project['objects'] for s in (units(o) if project.get('shotFramework')==2 else o.get('segments',[]))}
@@ -220,21 +234,41 @@ def validate_shots(project,export=False):
 
 
 def units(o):
- return sorted(edges(o)+[dict(id=n['id'],kind='DWELL',a=n,b=n,startTime=n['time'],endTime=n['time']+n['dwell']) for n in o.get('nodes',[]) if n.get('dwell',0)>0],key=lambda s:s['startTime'])
+ movement=[]
+ for s in edges(o):
+  prev=movement[-1] if movement else None
+  if prev and s.get('group') and s['group']==prev.get('group') and prev['end']==s['start'] and not s['a'].get('dwell'):
+   prev.update(end=s['end'],b=s['b'],endTime=s['endTime'])
+  else:movement.append(s)
+ return sorted(movement+[dict(id=n['id'],kind='DWELL',a=n,b=n,startTime=n['time'],endTime=n['time']+n['dwell']) for n in o.get('nodes',[]) if n.get('dwell',0)>0],key=lambda s:s['startTime'])
+
 def current_shot(p):
  for c in p['objects']:
   for sid,cfg in c.get('shots',{}).items():
    owner=next((o for o in p['objects'] if o['id']==cfg['owner']),None)
    unit=next((s for s in units(owner) if s['id']==sid),None) if owner else None
    if unit:return c,owner,unit,cfg
-def shot_at(p,c,t,only=None):
+def video_entries(p,c):
  entries=[]
  for sid,cfg in c.get('shots',{}).items():
   owner=next((o for o in p['objects'] if o['id']==cfg['owner']),None)
   unit=next((s for s in units(owner) if s['id']==sid),None) if owner else None
   if unit:entries.append((c,owner,unit,cfg))
- entries.sort(key=lambda e:(e[2]['startTime'],e[2]['id']))
+ for owner in p['objects']:
+  if owner.get('role') not in ('ACTOR','PROP'):continue
+  for unit in units(owner):
+   if unit.get('kind')!='DWELL' and unit['id'] not in c.get('shots',{}):entries.append((c,owner,unit,None))
+ return sorted(entries,key=lambda e:(e[2]['startTime'],e[2]['id']))
+
+def shot_at(p,c,t,only=None):
+ entries=video_entries(p,c)
  if only:return next((e for e in entries if e[2]['id']==only),None)
- return next((e for e in entries if e[2]['startTime']<=t<e[2]['endTime']),entries[-1] if entries and t==entries[-1][2]['endTime'] else None)
+ candidates=[e for e in entries if e[2]['startTime']<=t<e[2]['endTime']]
+ if not candidates and all(e[2]['endTime']<=t for e in entries):
+  candidates=[e for e in entries if e[2]['endTime']==t]
+ if len(candidates)<2:return candidates[0] if candidates else None
+ owners=dict.fromkeys([*c.get('videoTracks',[]),*(cfg['owner'] for cfg in c.get('shots',{}).values()),*(o['id'] for o in p['objects'] if o.get('role') in ('ACTOR','PROP'))])
+ ranks={owner:i for i,owner in enumerate(owners)}
+ return min(candidates,key=lambda e:ranks[e[1]['id']])
 def shot_range(p):
  return (0,p['settings']['duration'])

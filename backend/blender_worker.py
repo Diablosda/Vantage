@@ -91,6 +91,18 @@ def build(project,render=False):
                         track=rig.animation_data.nla_tracks.new();track.name='预演线段动作'
                         strip=track.strips.new('线段动作',int(round(first)),action);strip.action_frame_start=start;strip.action_frame_end=end
                         strip.repeat=max(.001,(last-first)/(end-start));strip.frame_start=first;strip.frame_end=last;strip.extrapolation='NOTHING'
+                        if seg.get('motionOffset'):
+                            # Keep Blender's native looping phase and enable the strip at the retained cut.
+                            phase=seg['motionOffset']*scene.render.fps
+                            strip.frame_start=first-phase
+                            strip.repeat=max(.001,(last-first+phase)/(end-start))
+                            strip.frame_end=last
+                            strip.use_animated_influence=True
+                            for frame,weight in ((first-1,0),(first,1)):
+                                strip.influence=weight
+                                strip.keyframe_insert(data_path='influence',frame=frame)
+                            for key in strip.fcurves.find('influence').keyframe_points:
+                                key.interpolation='CONSTANT'
                         for item in temporary:bpy.data.objects.remove(item,do_unlink=True)
                 bpy.context.view_layer.objects.active=obj
             scene_source=data.get('sceneSource')
@@ -314,8 +326,7 @@ def main():
                 scene.render.image_settings.file_format='PNG';folder=Path(payload['frameFolder']);folder.mkdir(parents=True,exist_ok=True)
                 bpy.ops.wm.save_as_mainfile(filepath=payload['blend'],check_existing=False)
                 for i,t in enumerate(payload['times']):
-                    frame=1+t*scene.render.fps;scene.frame_set(int(frame),subframe=frame-int(frame));runtime.evaluate(scene,strict=True)
-                    scene.render.filepath=str(folder/f'{i:06d}.png');bpy.ops.render.render(write_still=True)
+                    render_at(scene,project['settings'],t,payload.get('segment'),folder/f'{i:06d}.png')
             elif mode=='render':
                 runtime.prepare_export(scene)
                 if any(o.type=='LIGHT' and not o.hide_render for o in scene.objects):

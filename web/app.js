@@ -7,7 +7,7 @@ import {calibrateOrigin} from './model_origin.js';
 import {replaceModelGeometry} from './model_replace.js';
 import {numberInput,orbitParameters,orbitPosition,finiteVector} from './camera_state.js';
 import {focusPicker} from './focus_picker.js';
-import {shotEntries,editObject,freeAimShot,upgradeFramework,units,currentShot,configureShot,setDwell,setUnitDuration,pruneCurrentShot,migrate,syncSegments,edges,pathErrors,SegmentMotion,Evaluator,appendPoint,splitSegment,deleteSegment,deletePoint,clearPath,followOwner,newShot,retime,captureStart,cameraQuaternion,syncOrbit,convertShot,inheritShot} from './segments.js';
+import {mergePaths,pathUnit,deletePathRange,videoEntries,videoTrackOrder,shotEntries,editObject,freeAimShot,upgradeFramework,units,currentShot,configureShot,setDwell,setUnitDuration,pruneCurrentShot,migrate,syncSegments,edges,pathErrors,SegmentMotion,Evaluator,appendPoint,splitSegment,deleteSegment,deletePoint,clearPath,followOwner,newShot,retime,captureStart,cameraQuaternion,syncOrbit,convertShot,inheritShot} from './segments.js';
 import {openModelLibrary} from './model_library.js';
 import {controlScale,controlLens} from './camera_control.js';
 import {rememberInitial,resetObject} from './reset.js';
@@ -28,7 +28,7 @@ function blank(){const objects=cameraPair();return {version:2,shotFramework:2,id
 function clone(p){return {...p,settings:{...p.settings},objects:p.objects.map(o=>({...o,modelSource:o.modelSource?structuredClone(o.modelSource):o.modelSource,position:[...o.position],rotation:[...o.rotation],scale:[...o.scale],offset:[...(o.offset||[0,0,0])],nodes:structuredClone(o.nodes||[]),segments:structuredClone(o.segments),shots:structuredClone(o.shots||{}),angles:structuredClone(o.angles||[]),lenses:structuredClone(o.lenses||[]),rolls:structuredClone(o.rolls||[]),parts:(o.parts||[]).map(part=>({...part,matrix:[...part.matrix]}))}))};}
 let project=blank(),selected=null,multi=new Set(),nodeIndex=-1,tab='object',time=0,playing=false,loop=true,dirty=false,revision=0,pixelsPerSecond=100,token='',db=null,autosaveTimer=null,toastTimer=null,jobId=null;
 const undo=[],redo=[];let inputCommit=false;let gesture=null,orbitStart=null,gestureAim=null,shotSelection=null,previewRange=null,disposeFocus=null;
-const view=new Viewport($('#viewport'),$('#preview'),{select:select,start:gestureStart,transform:gestureMove,end:gestureEnd,pathPoint:addPathPoint,message:toast,segment:segmentMenu,emptyMenu:emptyCreateMenu,objectMenu:objectMenu});
+const view=new Viewport($('#viewport'),$('#preview'),{select:select,start:gestureStart,transform:gestureMove,end:gestureEnd,pathPoint:addPathPoint,message:toast,segment:segmentMenu,mergePath:mergePathClick,emptyMenu:emptyCreateMenu,objectMenu:objectMenu});
 
 function active(){return editObject(project,project.objects.find(o=>o.id===selected));}
 function camera(){return project.objects.find(o=>o.id===project.activeCamera&&o.role==='CAMERA');}
@@ -37,7 +37,7 @@ function markDirty(keepClipCache=false){if(!keepClipCache)forgetRenderedClips();
 const signature=p=>JSON.stringify(p,(k,v)=>k==='vertices'||k==='triangles'?undefined:v);
 function change(fn,keepClipCache=false){const before=clone(project),stamp=signature(project),oldSelected=selected,oldMulti=new Set(multi),oldNode=nodeIndex;try{fn();if(signature(project)===stamp)return;refresh();undo.push(before);if(undo.length>40)undo.shift();redo.length=0;markDirty(keepClipCache);$('#undoBtn').disabled=false;$('#redoBtn').disabled=true;}catch(e){project=before;selected=oldSelected;multi=oldMulti;nodeIndex=oldNode;try{refresh();}catch{}toast(e.message,true);}}
 function refresh(){migrate(project);pruneCurrentShot(project);for(const c of project.objects)for(const cfg of Object.values(c.shots||{})){if(cfg.freeMotion)retime(cfg.freeMotion);if(cfg.aimMotion)retime(cfg.aimMotion);}if(shotSelection&&!shotData().cfg){shotSelection=null;view.startEdit=null;tab='camera';}for(const o of project.objects){retime(o);if(o.nodes.length)project.settings.duration=Math.max(project.settings.duration,...o.nodes.map(n=>n.time+(n.dwell||0)));}if(previewRange&&currentShot(project)){const u=currentShot(project).unit;previewRange={start:u.startTime,end:u.endTime};time=Math.max(u.startTime,Math.min(time,u.endTime));}for(const c of project.objects.filter(o=>o.role==='CAMERA')){const t=project.objects.find(o=>o.id===c.target);if(t&&!(Number.isFinite(c.controlScale)&&c.controlScale>0))c.controlScale=controlScale(Math.hypot(...c.position.map((v,i)=>v-t.position[i])),c.lens||50);}project.objects.forEach(rememberInitial);const focused=document.activeElement,editing=inputCommit||$('#inspector').contains(focused)&&focused.tagName==='INPUT'&&focused.type!=='checkbox';view.setProject(project);view.select(selected,nodeIndex);renderObjects();if(!editing)renderInspector();renderTimeline();renderSettings();$('#undoBtn').disabled=!undo.length;$('#redoBtn').disabled=!redo.length;}
-function select(value,add=false,node=-1){playing=false;if(shotSelection&&value!==shotSelection.camera){shotSelection=null;view.startEdit=null;view.segmentId=null;}if(add&&value){multi.has(value)?multi.delete(value):multi.add(value);selected=multi.has(value)?value:[...multi].at(-1)||null;}else{selected=value;multi=new Set(value?[value]:[]);}if(value===camera()?.id&&currentShot(project)&&node<0){const entry=currentShot(project);shotSelection={camera:value,owner:entry.owner.id,sid:entry.unit.id};}if(node>=0)view.startEdit=null;if(shotSelection&&value===shotSelection.camera&&node<0){const {cfg,segment}=shotData();if(cfg?.controlVersion===3){view.startEdit={camera:value,position:[...cfg.start.position],locked:false};view.previewSegment=segment.id;}}nodeIndex=node;if(value&&active()?.nodes?.length&&nodeIndex<0)nodeIndex=0;if(node>=0)tab='path';view.select(selected,nodeIndex);renderObjects();renderInspector();renderTimeline();}
+function select(value,add=false,node=-1){playing=false;if(shotSelection&&value!==shotSelection.camera){shotSelection=null;view.startEdit=null;view.segmentId=null;}if(add&&value){multi.has(value)?multi.delete(value):multi.add(value);selected=multi.has(value)?value:[...multi].at(-1)||null;}else{selected=value;multi=new Set(value?[value]:[]);}if(value===camera()?.id&&currentShot(project)&&node<0){const entry=currentShot(project);shotSelection={camera:value,owner:entry.owner.id,sid:entry.unit.id};}if(node>=0)view.startEdit=null;if(shotSelection&&value===shotSelection.camera&&node<0){const {cfg,segment}=shotData();if(cfg?.controlVersion===3){view.startEdit={camera:value,position:[...cfg.start.position],locked:false};view.previewSegment=segment.id;}}nodeIndex=node;if(value&&active()?.nodes?.length&&nodeIndex<0)nodeIndex=0;if(node>=0)tab='path';view.select(selected,nodeIndex);for(const row of $$('#objectList [data-object]'))row.classList.toggle('selected',multi.has(row.dataset.object));renderInspector();renderTimeline();}
 function setTime(t){time=Math.max(0,Math.min(project.settings.duration,t));view.update(time);$('#timeReadout').textContent=`${String(Math.floor(time/60)).padStart(2,'0')}:${(time%60).toFixed(2).padStart(5,'0')}`;$('#playhead').style.left=`${time*pixelsPerSecond}px`;$('#statusText').textContent=view.warning||'就绪 · 预演与导出共用线段时间';const c=camera();$('#previewInfo').textContent=c?`${project.settings.width} × ${project.settings.height}  ·  ${(view.roots.get(c.id)?.userData.currentLens??c.lens).toFixed(0)} mm`:'';}
 function setTab(t){if(t==='path'){
  view.startEdit=null;
@@ -78,7 +78,13 @@ function moveControl(o,position,reference=null){
  view.update(time);$('#previewInfo').textContent=`${project.settings.width} × ${project.settings.height} · ${c.lens.toFixed(1)} mm`;
 }
 function gestureEnd(){const o=active();if(o?.nodes.length){syncSegments(o);retime(o);}if(gesture){undo.push(gesture);if(undo.length>40)undo.shift();redo.length=0;gesture=null;markDirty();refresh();}}
-function snap(p,o){const n=p.map(v=>project.settings.snap?Math.round(v/project.settings.grid)*project.settings.grid:v);if(o.lockZ)n[2]=o.nodes[0]?.position[2]??o.position[2];return n;}
+function pathPointPosition(position,o){
+ const {grid,snap}=project.settings;
+ const useGrid=snap&&o.role!=='ACTOR'&&o.role!=='PROP';
+ const point=useGrid?position.map(v=>Math.round(v/grid)*grid):[...position];
+ if(o.lockZ)point[2]=o.nodes[0]?.position[2]??o.position[2];
+ return point;
+}
 function ensureAimMotion(entry){
  if(entry&&!entry.cfg.aimMotion){
   const icon=view.roots.get(entry.c.target)?.userData.icon;
@@ -97,7 +103,7 @@ function addPathPoint(position){
   if(first&&['ACTOR','PROP'].includes(o.role)){o.orientation='PATH';o.smooth=true;o.timing='SPEED';o.speed=1;}
   const duration=aim&&aim.unit.endTime-aim.unit.startTime;
   const fit=aim&&o.timing==='TIME'&&(first||Math.abs(o.nodes.at(-1).time-duration)<1e-6)&&o.nodes.every(n=>!n.dwell);
-  appendPoint(o,snap(position,o));
+  appendPoint(o,pathPointPosition(position,o));
   if(fit){
    const scale=duration/o.nodes.at(-1).time;
    for(const n of o.nodes)n.time*=scale;
@@ -140,7 +146,7 @@ function renderObjects(){const icons={ACTOR:'♙',PROP:'◇',ENV:'▤',CAMERA:'�
 function field(label,key,value,type='number',extra=''){return `<label class="field"><span>${label}</span><input data-field="${key}" type="${type}" value="${esc(value)}" ${type==='number'?'step="0.1"':''} ${extra}></label>`;}
 function selectField(label,key,values,value){return `<label class="field"><span>${label}</span><select data-field="${key}">${options(values,value)}</select></label>`;}
 function check(label,key,value){return `<label class="field"><span>${label}</span><input data-field="${key}" type="checkbox" ${value?'checked':''}></label>`;}
-function vector(label,key,values,disabled=false){return `<div class="field"><span>${label}</span></div><div class="vector">${values.map((v,i)=>`<label><i>${'XYZ'[i]}</i><input aria-label="${label} ${'XYZ'[i]}" data-vector="${key}" data-axis="${i}" type="number" step="0.1" value="${Number(v.toFixed(3))}" ${disabled?'disabled':''}></label>`).join('')}</div>`;}
+function vector(label,key,values,disabled=false){return `<div class="field"><span>${label}</span></div><div class="vector">${values.map((v,i)=>`<label><i>${'XYZ'[i]}</i><input aria-label="${label} ${'XYZ'[i]}" data-vector="${key}" data-axis="${i}" type="number" step="${key==='nodePosition'?'any':'0.1'}" value="${key==='nodePosition'?v:Number(v.toFixed(3))}" ${disabled?'disabled':''}></label>`).join('')}</div>`;}
 function section(title,body){return `<section class="section"><h3>${title}</h3>${body}</section>`;}
 function keyEditor(o,kind,title){const keys=o[kind]||[];return section(title,`<div class="inline-actions"><button data-action="key-${kind}">＋ 记录当前${kind==='lenses'?'焦距':kind==='rolls'?'Roll':'角度'}</button></div>`+keys.map((k,i)=>`<div class="key-row"><input aria-label="${title}时间" type="number" min="0" step="0.1" data-key="${kind}" data-index="${i}" data-prop="time" value="${Number(k.time.toFixed(3))}">${kind==='angles'?`<button data-action="seekKey" data-kind="${kind}" data-index="${i}">${k.rotation.map(v=>deg(v).toFixed(0)).join(' / ')}°</button>`:`<input aria-label="${title}数值" type="number" step="0.1" data-key="${kind}" data-index="${i}" data-prop="value" value="${Number((kind==='rolls'?deg(k.value):k.value).toFixed(2))}">`}<button data-action="deleteKey" data-kind="${kind}" data-index="${i}" title="删除关键帧">×</button></div><select aria-label="关键帧插值" style="width:100%;font-size:10px;padding:4px" data-key="${kind}" data-index="${i}" data-prop="easing">${options(easings,k.easing)}</select>`).join('')+(!keys.length?'<p class="hint">移动时间游标，调整数值，再记录。</p>':''));}
 function renderInspector(){const el=$('#inspector'),scroll=el.scrollTop,page=window.scrollY;try{renderInspectorContent();layoutInspector();}finally{el.scrollTop=scroll;window.scrollTo(window.scrollX,page);}}
@@ -149,13 +155,13 @@ function renderInspectorContent(){disposeFocus?.();disposeFocus=null;if(tab==='s
  if(['CAMERA','TARGET'].includes(o.role)&&!shotSelection&&!(tab==='path'&&freeAimShot(project,o.id)?.cfg.aimMotion)){const c=o.role==='CAMERA'?o:camera();el.innerHTML=section('基础取景',`<p>拖动 C 调整机位，拖动 T 辅助构图。右键物品线段或停留点设置镜头。</p>`+field('焦距 mm',o.role==='CAMERA'?'lens':'controlLens',c.lens,'number','min="1" max="1000"')+'<button data-action="selectTarget">选择辅助目标 T</button>');return;}
  if(tab==='object'){el.innerHTML=section('对象属性',`<button data-action="resetObject" style="width:100%;margin-bottom:12px">${o.role==='CAMERA'?'复位摄影机与目标':o.role==='TARGET'?'复位视线目标':'复位对象'}</button>`+field('名称','name',o.name,'text')+selectField('类型','role',o.role==='CAMERA'?{CAMERA:'摄影机'}:o.role==='TARGET'?{TARGET:'视线目标'}:{ACTOR:'人物',PROP:'物品',ENV:'静态环境'},o.role)+check('锁定对象','locked',o.locked)+vector('位置（单位）','position',o.position,o.locked||o.nodes.length>0||!!o.follow)+vector('旋转 °','rotation',o.rotation.map(deg),o.locked||(o.role==='CAMERA'&&o.viewMode==='LOCK'))+vector('缩放','scale',o.scale,o.locked||!!o.modelSource||!!o.geometrySpec)+(o.role==='CAMERA'&&o.viewMode==='LOCK'?'<p class="hint">视线由 T 控制，画面倾斜请到「镜头」调整 Roll。</p>':'')+(o.nodes.length?'<p class="hint">位置由路径控制，请切到「路径」修改节点。</p>':''))+section('方向与白模',selectField('朝向模式','orientation',{FIXED:'固定朝向',PATH:'沿路径朝向',MANUAL:'手动关键角度'},o.orientation)+check('地面运动锁定 Z','lockZ',o.lockZ)+`<p class="hint">逻辑 ${o.frontAxis==='-Y'?'-Y':'+Y'} 是正面，+Z 是上方。</p><div class="inline-actions"><button data-action="calibrate">校准正面 +90°</button><button data-action="proxy">转为代理白模</button></div>`)+keyEditor(o,'angles','关键角度')+`<button class="danger" data-action="delete">删除选中对象</button>`;return;}
  if(view.editLayer==='CAMERA'&&!['CAMERA','TARGET'].includes(o.role)){el.innerHTML='<p class="hint">物品及其轨迹在相机图层只读。切换到物品图层进行编辑。</p>';return;}
- if(tab==='path'){const nodes=o.nodes||[],i=Math.max(0,Math.min(nodeIndex,nodes.length-1)),n=nodes[i],ss=edges(o);el.innerHTML=section(freeAimShot(project,o.id)?'视线目标路径':'运动路径',selectField('时间控制','timing',{TIME:'按控制点时间',SPEED:'按实际路程速度'},o.timing||'TIME')+(o.timing==='SPEED'?field('速度 单位/秒','speed',o.speed||1,'number','min="0.001"'):field('路径运动时长 s','pathDuration',ss.reduce((v,s)=>v+s.endTime-s.startTime,0)||1,'number','min="0.01"'))+check('平滑拐角','smooth',o.smooth)+`<div class="inline-actions"><button data-action="pathTool">在视图中布点</button><button data-action="addNode">数值加点</button></div>${nodes.length?'<button data-action="resetPath" title="清空当前对象的全部布点、线段及对应镜头；可撤销">清空</button>':''}${freeAimShot(project,o.id)?'<button data-action="selectCamera">返回当前镜头</button><p class="hint">到达时间从本段镜头开始计算。清空视线路径可恢复自由朝向。</p>':'<p class="hint">连续三维控制点；默认按实际路程匀速并水平转向。右键橙色线段可删除或设置镜头。删线段同时清理孤立布点；共用端点保留。清空只作用于当前对象，可 Ctrl+Z 撤销。</p>'}`+ss.map((s,i)=>`<div class="segment-row ${view.segmentId===s.id?'active':''}"><button data-edge="${s.id}" data-owner="${o.id}">线段 ${i+1}${shotEntries(project).some(e=>e.owner.id===o.id&&e.unit.id===s.id)?' · 已设镜头':''} · ${s.startTime.toFixed(2)}–${s.endTime.toFixed(2)}s</button><button data-split="${s.id}">插点</button></div>`).join('')+`<div class="node-list">${nodes.map((n,i)=>`<div data-node="${i}" class="node-row ${i===nodeIndex?'active':''}"><b>P${i}</b><span>${n.position.map(v=>v.toFixed(1)).join(', ')}</span><span>${n.time.toFixed(2)}s</span></div>`).join('')}</div>`)+(n?section(`P${i} · 控制点`,vector('位置（单位）','nodePosition',n.position)+field('到达时间 s','nodeTime',n.time,'number',o.timing==='SPEED'?'disabled':'min="0"')+field('停留时间 s','nodeDwell',n.dwell||0,'number','min="0"')+selectField('本段速度','nodeEasing',easings,n.easing)+check('必须精确经过','nodeExact',n.exact)+field('圆角范围（单位）','nodeRadius',n.radius??.5,'number','min="0"')+'<button data-action="deletePathPoint">删除当前布点及相连线段</button>'):'')+`<p class="hint error">${esc(pathErrors(o,true).join('；'))}</p>`+(nodes.length?'<button data-action="repairGap">连接相邻断点</button>':'');return;}
+ if(tab==='path'){const nodes=o.nodes||[],i=Math.max(0,Math.min(nodeIndex,nodes.length-1)),n=nodes[i],ss=edges(o);el.innerHTML=section(freeAimShot(project,o.id)?'视线目标路径':'运动路径',selectField('时间控制','timing',{TIME:'按控制点时间',SPEED:'按实际路程速度'},o.timing||'TIME')+(o.timing==='SPEED'?field('速度 单位/秒','speed',o.speed||1,'number','min="0.001"'):field('路径运动时长 s','pathDuration',ss.reduce((v,s)=>v+s.endTime-s.startTime,0)||1,'number','min="0.01"'))+check('平滑拐角','smooth',o.smooth)+`<div class="inline-actions"><button data-action="pathTool">在视图中布点</button><button data-action="addNode">数值加点</button></div>${nodes.length?'<button data-action="resetPath" title="清空当前对象的全部布点、线段及对应镜头；可撤销">清空</button>':''}${freeAimShot(project,o.id)?'<button data-action="selectCamera">返回当前镜头</button><p class="hint">到达时间从本段镜头开始计算。清空视线路径可恢复自由朝向。</p>':'<p class="hint">连续三维控制点；默认按实际路程匀速并水平转向。右键橙色线段可删除或设置镜头。删线段同时清理孤立布点；共用端点保留。清空只作用于当前对象，可 Ctrl+Z 撤销。</p>'}`+ss.map((s,i)=>`<div class="segment-row ${view.segmentId===s.id||s.group===view.segmentId&&s.group?'active':''}"><button data-edge="${s.id}" data-owner="${o.id}">线段 ${i+1}${s.group?' · 已合并':''}${shotEntries(project).some(e=>e.owner.id===o.id&&(e.unit.members||[e.unit.id]).includes(s.id))?' · 已设镜头':''} · ${s.startTime.toFixed(2)}–${s.endTime.toFixed(2)}s</button><button data-split="${s.id}">插点</button></div>`).join('')+`<div class="node-list">${nodes.map((n,i)=>`<div data-node="${i}" class="node-row ${i===nodeIndex?'active':''}"><b>P${i}</b><span>${n.position.map(v=>v.toFixed(1)).join(', ')}</span><span>${n.time.toFixed(2)}s</span></div>`).join('')}</div>`)+(n?section(`P${i} · 控制点`,vector('位置（单位）','nodePosition',n.position)+field('到达时间 s','nodeTime',n.time,'number',o.timing==='SPEED'?'disabled':'min="0"')+field('停留时间 s','nodeDwell',n.dwell||0,'number','min="0"')+selectField('本段速度','nodeEasing',easings,n.easing)+check('必须精确经过','nodeExact',n.exact)+field('圆角范围（单位）','nodeRadius',n.radius??.5,'number','min="0"')+'<button data-action="deletePathPoint">删除当前布点及相连线段</button>'):'')+`<p class="hint error">${esc(pathErrors(o,true).join('；'))}</p>`+(nodes.length?'<button data-action="repairGap">连接相邻断点</button>':'');return;}
  if(o.role==='TARGET'){const followOptions={'':'独立移动',...Object.fromEntries(project.objects.filter(x=>['ACTOR','PROP','ENV'].includes(x.role)).map(x=>[x.id,x.name]))},c=view.controlCamera(o.id);el.innerHTML=section('综合控制点 T',`<p class="hint">拖动方向控制转头；沿虚线拉远变长焦、推近变广角。机位 C 保持不动。</p>`+(c?field('焦距 mm','controlLens',keyValue(c.lenses||[],time,c.lens),'number','min="1" max="1000"'):'')+`<button data-action="moveTarget" style="width:100%;margin:8px 0">移动综合控制点 T</button>`+(!o.nodes.length?vector('控制点位置（单位）','controlPosition',view.roots.get(o.id).userData.icon.position.toArray()):'')+selectField('跟随对象','follow',followOptions,o.follow||'')+(o.follow?vector('瞄准偏移（单位）','offset',o.offset||[0,0,0]):'')+`<p class="hint">跟随时变焦仍瞄准对象；拖动小点可调整瞄准偏移。已有路径请编辑节点与焦距键。自由朝向下拖动会切回锁定。</p><button data-action="targetPath">编辑瞄准路径</button>`);return;}
  if(o.role!=='CAMERA'){el.innerHTML='<div class="empty-selection"><strong>摄影机与视线目标</strong>选择摄影机 C 或目标 T，<br>设置取景、跟随与焦距。<br><button style="margin-top:15px" data-action="selectCamera">选择活动摄影机</button></div>';return;}
  el.innerHTML=section('视线控制',`<button data-action="resetObject" style="width:100%;margin-bottom:12px">复位摄影机与目标</button><p class="hint">C 是机位，T 是综合控制点。改变 T 的方向让镜头转头，沿虚线拉远变长焦、推近变广角。修改焦距数字，小点会同步移动。</p>`+selectField('模式','viewMode',{FREE:'自由移动',LOCK:'目标跟随 / 锁定 T'},o.viewMode)+selectField('跟随对象','followObject',{'':'独立视线目标',...Object.fromEntries(project.objects.filter(x=>['ACTOR','PROP','ENV'].includes(x.role)).map(x=>[x.id,x.name]))},project.objects.find(x=>x.id===o.target)?.follow||'')+`<div class="inline-actions"><button data-action="selectTarget">选择目标 T</button><button data-action="orbitTool">拖动环绕机位</button></div><div class="preset-row"><button data-action="orbitLeft">环绕 −15°</button><button data-action="orbitRight">环绕 +15°</button></div><p class="hint">切换模式保留当前构图。环绕调整 C 的位置，T 保持不动。</p>`)+section('焦距',field('镜头 mm','lens',o.lens,'number','min="1" max="1000"')+`<input type="range" aria-label="焦距滑块" data-field="lens" min="18" max="135" step="1" value="${o.lens}"><div class="preset-row">${[18,24,35,50,85].map(v=>`<button data-lens="${v}">${v}</button>`).join('')}</div><p class="hint">控制点远离 C → 长焦；靠近 C → 广角<br>跟随人物只改变瞄准方向，不自动变焦。</p>`)+keyEditor(o,'lenses','焦距关键帧')+(o.viewMode==='LOCK'?section('画面倾斜',check('启用 Roll','rollEnabled',o.rollEnabled)+field('Roll °','roll',deg(o.roll||0)))+keyEditor(o,'rolls','Roll 关键帧'):section('画面倾斜','<p class="hint">自由朝向使用局部坐标旋转或对象角度关键帧控制画面倾斜。</p>'));
 }
 
-function renderTimeline(){const width=Math.max($('#tracksScroll').clientWidth,project.settings.duration*pixelsPerSecond+50);$('#tracks').style.width=`${width}px`;$('#tracks').style.minHeight='58px';const step=pixelsPerSecond<45?2:pixelsPerSecond>180?.5:1;$('#ruler').innerHTML=Array.from({length:Math.floor(project.settings.duration/step)+1},(_,i)=>`<span class="tick" style="left:${i*step*pixelsPerSecond}px">${(i*step).toFixed(step<1?1:0)}s</span>`).join('');$('#trackLabels').innerHTML='<div class="track-label">摄影机 · 镜头片段</div>';$('#trackLanes').innerHTML=videoTrack();setTime(time);}
+function renderTimeline(){const width=Math.max($('#tracksScroll').clientWidth,project.settings.duration*pixelsPerSecond+50);$('#tracks').style.width=`${width}px`;$('#tracks').style.minHeight='58px';const step=pixelsPerSecond<45?2:pixelsPerSecond>180?.5:1;$('#ruler').innerHTML=Array.from({length:Math.floor(project.settings.duration/step)+1},(_,i)=>`<span class="tick" style="left:${i*step*pixelsPerSecond}px">${(i*step).toFixed(step<1?1:0)}s</span>`).join('');renderVideoTracks();setTime(time);}
 
 function fieldChange(key,value){const o=active();if(o?.sceneSource?.kind==='LIGHT'&&['role','orientation'].includes(key)){toast('场景灯光不参与运动轨迹');renderInspector();return;}if(key==='role'&&value==='ENV'&&o?.nodes?.length){modal('修改为背景','<p>背景不能使用运动轨迹。继续会清除该对象路径及相关镜头引用，可撤销。</p>',[{label:'取消',run:()=>{closeModal();renderInspector();}},{label:'清除轨迹并修改',primary:true,run:()=>{closeModal();change(()=>{clearPath(project,o);o.role='ENV';o.lockZ=false;});}}]);return;}change(()=>{const entry=currentShot(project);if(entry&&['lens','controlLens'].includes(key)){entry.cfg.lens=value;return;}const s=project.settings;
  if(['width','height','grid','fps','duration','axisOrder'].includes(key)){s[key]=value;if(['width','height'].includes(key))s.ratio='CUSTOM';return;}
@@ -188,7 +194,7 @@ async function waitJob(ident,title){jobId=ident;modal(title,'<p id="jobMessage">
 let defaultOutputDirectory='',chosenOutputDirectory='',legacyBackend=false,savePending=false;
 let framePreview=null,framePending=false;
 const renderedClips=new Map();
-let timelineClips=[],shownClipFrame='';
+let timelineClips=[],filmEnd=0,shownClipFrame='';
 function forgetRenderedClips(){
  for(const {job} of renderedClips.values())request('/api/clip-release',{job}).catch(()=>{});
  renderedClips.clear();
@@ -211,8 +217,9 @@ function renderedAtPlayhead(){
 }
 function renderedAtTime(time,segment){
  if(!renderedClips.size)return null;
- const clip=timelineClips.find(c=>(!segment||segment===c.sid)&&
-  time>=c.startTime&&time<c.endTime) || (time===timelineClips.at(-1)?.endTime?timelineClips.at(-1):null);
+ const clips=segment?timelineClips.filter(c=>c.sid===segment):timelineClips;
+ const clip=clips.find(c=>time>=c.startTime&&time<c.endTime)||
+  (clips.every(c=>c.endTime<=time)?clips.find(c=>c.endTime===time):null);
  const result=clip&&renderedClips.get(clip.key);
  if(!result)return null;
  const frame=Math.min(result.frames-1,Math.max(0,Math.floor((time-clip.startTime)*project.settings.fps+1e-7)));
@@ -224,7 +231,7 @@ $('#clipFrame').onerror=()=>{
  for(const [key,result] of renderedClips)if(url.split('/')[3]===result.job)renderedClips.delete(key);
  showClipFrame(null);
  renderTimeline();
- toast('视频条缓存无法读取，请重新渲染',true);
+ toast('轨道片段缓存无法读取，请重新渲染',true);
 };
 let saveTarget=null,draftTarget=null,nativeProjectOpen=false;
 let exportClip=null;
@@ -234,7 +241,7 @@ function currentExportSegment(){
  const obj=active();
  if(obj&&!['CAMERA','TARGET'].includes(obj.role)){
   const segment=view.segmentId||edges(obj)[Math.max(0,nodeIndex-1)]?.id;
-  return {owner:obj.id,segment};
+  return {owner:obj.id,segment:pathUnit(obj,segment)?.id};
  }
  const current=currentShot(project);return {owner:current?.owner.id,segment:current?.unit.id};
 }
@@ -302,7 +309,7 @@ async function saveCurrentFrame(){
   const clipURL=renderedAtPlayhead();
   if(!png&&clipURL){
    const response=await fetch(clipURL);
-   if(!response.ok)throw Error('视频条预览已过期，请重新渲染');
+   if(!response.ok)throw Error('轨道片段预览已过期，请重新渲染');
    png=await response.blob();
   }
   if(!png){
@@ -320,10 +327,10 @@ function save(render=false,afterSave=null,scope='all',asCopy=false){
  if(jobId||savePending)return toast('请等待当前任务结束');playing=false;
  if(render){
   const selected=scope==='clip'?{owner:exportClip.owner,segment:exportClip.sid}:scope==='current'?currentExportSegment():{};
-  const entries=shotEntries(project).filter(e=>scope==='all'||e.owner.id===selected.owner&&e.unit.id===selected.segment);
-  if(!entries.length)return toast(scope==='current'?'请先选中已配置镜头的路径或时间轴片段':'请先为路径设置镜头',true);
+  const entries=videoEntries(project).filter(e=>scope==='all'||e.owner.id===selected.owner&&e.unit.id===selected.segment);
+  if(!entries.length)return toast(scope==='current'?'请先选中人物或物品的路径或视频段':'请先为人物或物品创建路径',true);
   exportScope=scope;exportOwner=selected.owner||null;exportSegment=selected.segment||null;videoFile='';videoOverwrite=false;videoHandle=null;
-  modal(scope==='all'?'导出全部视频':scope==='clip'?'导出此视频条':'导出当前视频',`${scope==='clip'?'':'<label><input id="exportLighting" type="checkbox">开启光影渲染</label>'}<label class="field wide"><span>MP4 保存位置</span><input id="videoFile" type="text" placeholder="点击另存为，或输入完整的 .mp4 文件路径"></label><button id="chooseVideoFile">另存为…</button><p class="hint" id="videoSaveHint">只保存一个 MP4 视频文件。</p>`,[{label:'取消',run:closeModal},{label:'开始导出',primary:true,run:()=>{const file=$('#videoFile').value.trim();if(!file)return toast('请先选择 MP4 保存位置',true);videoOverwrite=file===videoFile&&videoOverwrite;videoFile=file;exportLighting=$('#exportLighting')?.checked??false;performSave(true,null,file,null,null);}}]);
+  modal(scope==='all'?'导出全部视频':scope==='clip'?'导出轨道片段':'导出当前视频',`${scope==='clip'?'':'<label><input id="exportLighting" type="checkbox">开启光影渲染</label>'}<label class="field wide"><span>MP4 保存位置</span><input id="videoFile" type="text" placeholder="点击另存为，或输入完整的 .mp4 文件路径"></label><button id="chooseVideoFile">另存为…</button><p class="hint" id="videoSaveHint">只保存一个 MP4 视频文件。</p>`,[{label:'取消',run:closeModal},{label:'开始导出',primary:true,run:()=>{const file=$('#videoFile').value.trim();if(!file)return toast('请先选择 MP4 保存位置',true);videoOverwrite=file===videoFile&&videoOverwrite;videoFile=file;exportLighting=$('#exportLighting')?.checked??false;performSave(true,null,file,null,null);}}]);
   const input=$('#videoFile'),hint=$('#videoSaveHint'),button=$('#chooseVideoFile');
   input.oninput=()=>{videoOverwrite=false;videoHandle=null;};
   button.onclick=async()=>{button.disabled=true;hint.textContent='正在打开另存为窗口…';try{
@@ -344,12 +351,11 @@ async function performSave(render=false,afterSave=null,path='',target=null,saveN
  if(savePending)return;savePending=true;const snapshot=clone(project),savedRevision=revision;snapshot.playhead=time;if(saveName!==null)snapshot.name=saveName;modal(render?'正在准备视频':'正在准备保存','<p>正在准备，请稍候。</p>');
  try{
   const {job,times}=await request(render?'/api/export':'/api/save',{project:snapshot,saveTarget:target,outputDirectory:render?null:path||null,outputFile:render&&!videoHandle?path:null,browserSave:render&&!!videoHandle,overwrite:videoOverwrite,scope:exportScope,firstFrame:exportScope==='clip'?exportClip.first:null,owner:exportOwner,segment:exportSegment,lighting:exportLighting});
-  if(times){const old={start:view.startEdit,segment:view.previewSegment,time};view.startEdit=null;view.previewSegment=null;let cancelled=false;modal('正在导出预览画面','<p id="captureProgress">正在准备画面…</p>',[{label:'取消',run:()=>{cancelled=true;}}]);try{for(let i=0;i<times.length;i++){if(cancelled)throw Error('已取消导出');const url=renderedAtTime(times[i],exportScope==='all'?null:exportSegment);
-    if(!url&&exportScope==='clip')throw Error('此视频条需要重新渲染');
+  if(times){const old={start:view.startEdit,segment:view.previewSegment,time};view.startEdit=null;view.previewSegment=exportScope==='all'?null:exportSegment;let cancelled=false;modal('正在导出预览画面','<p id="captureProgress">正在准备画面…</p>',[{label:'取消',run:()=>{cancelled=true;}}]);try{for(let i=0;i<times.length;i++){if(cancelled)throw Error('已取消导出');const url=renderedAtTime(times[i],exportScope==='all'?null:exportSegment);
     let blob;
     if(url){
      const response=await fetch(url);
-     if(!response.ok)throw Error('视频条缓存已过期，请重新渲染');
+     if(!response.ok)throw Error('轨道片段缓存已过期，请重新渲染');
      blob=await response.blob();
     }else blob=await view.exportFrame(times[i]);await request('/api/preview-frame/'+job,blob,true);$('#captureProgress').textContent=`正在生成 ${i+1} / ${times.length} 帧`;}await request('/api/preview-finish',{job});}catch(e){await request(`/api/jobs/${job}/cancel`,{}).catch(()=>{});throw e;}finally{view.startEdit=old.start;view.previewSegment=old.segment;view.previewRenderer.setPixelRatio(Math.min(devicePixelRatio,2));view.resize();view.update(old.time);}}
   const result=await waitJob(job,render?'导出视频':'保存工程');
@@ -454,7 +460,7 @@ const actions={
  calibrate:()=>{const o=active();if(o?.parts.length)change(()=>{const r=new THREE.Matrix4().makeRotationZ(Math.PI/2);o.parts=o.parts.map(p=>({...p,matrix:r.clone().multiply(new THREE.Matrix4().fromArray(p.matrix)).toArray()}));if(o.modelSource)o.modelSource.localYaw=(o.modelSource.localYaw||0)+Math.PI/2;});},
  resetPath:()=>{const o=active();if(o)change(()=>{clearPath(project,o);finishPathDeletion(o);});},
  deletePathPoint:()=>{const o=active(),n=o?.nodes[Math.max(0,nodeIndex)];if(n)change(()=>{deletePoint(project,o,n.id);finishPathDeletion(o);});},
- addNode:()=>{const o=active();if(!o)return;const p=o.nodes.at(-1)?.position||o.position;modal('添加路径节点',`<p>输入世界坐标，直接连接到末点；时间按实际路程和速度计算。</p><div class="vector">${p.map((v,i)=>`<label><i>${'XYZ'[i]}</i><input id="newNode${i}" type="number" step="0.5" value="${v+(i===0?project.settings.grid:0)}"></label>`).join('')}</div>`,[{label:'取消',run:closeModal},{label:'添加',primary:true,run:()=>{const p=[0,1,2].map(i=>Number($('#newNode'+i).value));closeModal();addPathPoint(p);}}]);},
+ addNode:()=>{const o=active();if(!o)return;const p=o.nodes.at(-1)?.position||o.position;modal('添加路径节点',`<p>输入世界坐标，直接连接到末点；时间按实际路程和速度计算。</p><div class="vector">${p.map((v,i)=>`<label><i>${'XYZ'[i]}</i><input id="newNode${i}" type="number" step="any" value="${v+(i===0?project.settings.grid:0)}"></label>`).join('')}</div>`,[{label:'取消',run:closeModal},{label:'添加',primary:true,run:()=>{const p=[0,1,2].map(i=>Number($('#newNode'+i).value));closeModal();addPathPoint(p);}}]);},
  help:()=>modal('镜头工作流程','<p>1 · 摆放物品、摄影机 C 与辅助目标 T，调整焦距。</p><p>2 · 在物品图层给物品布路径。点默认不停留，可输入正数停留时长。</p><p>3 · 右键运动线段或停留点 → 设置镜头 → 自由模式 / 跟踪模式。默认独立；需要衔接时主动选择继承上一镜结束状态。</p><p>4 · 相机图层编辑镜头；物品路径显示为只读虚线。自由模式还可分别编辑相机路径与视线目标路径、角度和焦距关键帧，共用场景时间。</p><p>5 · 预演并导出已设镜头视频。所有物品按全局时间运动。新设镜头直接替换旧配置，已导出文件保持不变。</p><p>三视图与自由观察只改变编辑视角。在三视图中选中人物、物品、摄影机或视线目标，方向键按屏幕方向微调。人物和物品的已有路径会整体平移。右键自建白模或几何体可设置定位颜色。空格播放，Q/W/E 选择/移动/旋转，F 聚焦，Ctrl+Z 撤销，Ctrl+S 保存。</p>',[{label:'开始创作',primary:true,run:closeModal}])
 };
 for(const kind of ['angles','lenses','rolls'])actions['key-'+kind]=()=>{const o=active();if(!o)return;change(()=>{const entry=currentShot(project),state=entry&&o.id===entry.c.id?new Evaluator(project).camera(entry.c,time):null;putKey(o,kind,kind==='angles'?(state?rotationOf(new THREE.Quaternion(...cameraQuaternion(state))):o.rotation):kind==='lenses'?(state?.lens??o.lens):o.roll||0);if(kind==='angles')o.orientation='MANUAL';});};
@@ -469,10 +475,32 @@ function validateNumberControl(input){
  catch(e){input.setCustomValidity(e.message);toast(e.message,true);return false;}
 }
 $('#objectList').addEventListener('contextmenu',e=>{const row=e.target.closest('[data-object]');if(row){e.preventDefault();objectMenu(row.dataset.object,e.clientX,e.clientY);}});
-$('#objectList').addEventListener('dblclick',e=>{const row=e.target.closest('[data-object]');if(!row)return;const o=project.objects.find(x=>x.id===row.dataset.object);if(!o)return;select(o.id);modal('重命名',`<input id="renameObject" value="${esc(o.name)}" maxlength="80">`,[{label:'取消',run:closeModal},{label:'保存',primary:true,run:()=>{const name=$('#renameObject').value.trim();if(!name)return;change(()=>o.name=name);closeModal();}}]);});
+function renameObject(o){
+ let input;
+ const saveName=()=>{
+  const name=input.value.trim();
+  if(!name){input.setCustomValidity('请输入名称');input.reportValidity();return;}
+  change(()=>{o.name=name;},true);
+  closeModal();
+ };
+ modal('重命名','<label class="field wide"><span>名称</span><input id="renameObject" maxlength="80"></label>',[
+  {label:'取消',run:closeModal},{label:'保存',primary:true,run:saveName}
+ ]);
+ input=$('#renameObject');
+ input.value=o.name;
+ input.focus();input.select();
+ input.oninput=()=>input.setCustomValidity('');
+ input.onkeydown=e=>{if(e.key==='Enter'&&!e.isComposing&&e.keyCode!==229){e.preventDefault();saveName();}};
+}
+$('#objectList').addEventListener('dblclick',e=>{
+ const row=e.target.closest('[data-object]');
+ if(!row||e.target.closest('button'))return;
+ const o=project.objects.find(x=>x.id===row.dataset.object);
+ if(o)renameObject(o);
+});
 $('#inspector').addEventListener('change',e=>{if(!validateNumberControl(e.target)){e.stopImmediatePropagation();return;}if(e.target.tagName==='INPUT'&&e.target.type!=='checkbox'){inputCommit=true;queueMicrotask(()=>inputCommit=false);}},true);
 $('#inspector').addEventListener('input',e=>e.target.setCustomValidity?.(''));
-$('#inspector').addEventListener('change',e=>{const input=e.target;if(input.dataset.field){const value=input.type==='checkbox'?input.checked:input.type==='number'||input.type==='range'?Number(input.value):input.value;if(typeof value==='number'&&!Number.isFinite(value))return toast('请输入有效数字',true);fieldChange(input.dataset.field,value);}else if(input.dataset.vector){const o=active(),axis=Number(input.dataset.axis),value=Number(input.value);if(!Number.isFinite(value))return;change(()=>{const key=input.dataset.vector;if(key==='controlPosition'){const p=view.roots.get(o.id).userData.icon.position.toArray();p[axis]=value;moveControl(o,p);}else if(key==='nodePosition'){const n=o.nodes[nodeIndex];n.position[axis]=value;n.position=snap(n.position,o);syncSegments(o);retime(o);}else{o[key][axis]=key==='rotation'?rad(value):value;if(key==='scale')o[key][axis]=Math.max(.001,o[key][axis]);if(key==='rotation'&&o.orientation==='MANUAL')putKey(o,'angles',o.rotation);}});}else if(input.dataset.key){const o=active(),kind=input.dataset.key,k=o[kind][Number(input.dataset.index)];change(()=>{const prop=input.dataset.prop;k[prop]=prop==='easing'?input.value:Number(input.value);if(kind==='rolls'&&prop==='value')k.value=rad(k.value);});}});
+$('#inspector').addEventListener('change',e=>{const input=e.target;if(input.dataset.field){const value=input.type==='checkbox'?input.checked:input.type==='number'||input.type==='range'?Number(input.value):input.value;if(typeof value==='number'&&!Number.isFinite(value))return toast('请输入有效数字',true);fieldChange(input.dataset.field,value);}else if(input.dataset.vector){const o=active(),axis=Number(input.dataset.axis),value=Number(input.value);if(!Number.isFinite(value))return;change(()=>{const key=input.dataset.vector;if(key==='controlPosition'){const p=view.roots.get(o.id).userData.icon.position.toArray();p[axis]=value;moveControl(o,p);}else if(key==='nodePosition'){const n=o.nodes[nodeIndex];const position=[...n.position];position[axis]=value;n.position=pathPointPosition(position,o);syncSegments(o);retime(o);}else{o[key][axis]=key==='rotation'?rad(value):value;if(key==='scale')o[key][axis]=Math.max(.001,o[key][axis]);if(key==='rotation'&&o.orientation==='MANUAL')putKey(o,'angles',o.rotation);}});}else if(input.dataset.key){const o=active(),kind=input.dataset.key,k=o[kind][Number(input.dataset.index)];change(()=>{const prop=input.dataset.prop;k[prop]=prop==='easing'?input.value:Number(input.value);if(kind==='rolls'&&prop==='value')k.value=rad(k.value);});}});
 $('#projectName').addEventListener('change',e=>change(()=>project.name=e.target.value||'未命名预演'));
 // Commit numeric/text input immediately without replacing the focused control.
 $('#inspector').addEventListener('input',e=>{if(e.target.tagName==='INPUT'&&e.target.type!=='checkbox'&&e.target.value!==''&&(!['number','range'].includes(e.target.type)||Number.isFinite(e.target.valueAsNumber)&&(!e.target.min||e.target.valueAsNumber>=Number(e.target.min))&&(!e.target.max||e.target.valueAsNumber<=Number(e.target.max))))e.target.dispatchEvent(new Event('change',{bubbles:true}));});
@@ -487,7 +515,9 @@ $('#motionFile').addEventListener('change',async e=>{
  const file=e.target.files[0],ownerId=e.target.dataset.owner,sid=e.target.dataset.segment;e.target.value='';if(!file)return;
  try{
   const originalProject=project,owner=project.objects.find(o=>o.id===ownerId),segment=owner?.segments?.find(s=>s.id===sid);
-  if(!segment)throw Error('线段已不存在');let modelSource=owner.modelSource,parts=null;
+  if(!segment)throw Error('线段已不存在');
+  const unit=pathUnit(owner,sid),members=owner.segments.filter(s=>unit.members.includes(s.id));
+  let modelSource=owner.modelSource,parts=null;
   if(!modelSource){
    const response=await fetch('/api/models');if(!response.ok)throw Error('无法读取模型库');const list=await response.json();
    const model=list.models.find(x=>x.name.toLowerCase()===(owner.name+'.glb').toLowerCase());
@@ -497,17 +527,24 @@ $('#motionFile').addEventListener('change',async e=>{
   }
   const motion=await request('/api/motions?model='+encodeURIComponent(modelSource.name),file,true);
   if(project!==originalProject||project.objects.find(o=>o.id===ownerId)!==owner||!owner.segments.includes(segment))throw Error('对象已变化，请重新绑定');
-  const candidate={...project,objects:project.objects.map(o=>o===owner?{...o,modelSource,parts:parts||o.parts,segments:o.segments.map(s=>s===segment?{...s,motion}:s)}:o)};
+  const candidate={...project,objects:project.objects.map(o=>o===owner?{...o,modelSource,parts:parts||o.parts,segments:o.segments.map(s=>members.includes(s)?{...s,motion,motionOffset:s.startTime-unit.startTime}:s)}:o)};
   const checked=await request('/api/validate',{project:candidate});if(checked.errors.length)throw Error(checked.errors.join('；'));
   if(project!==originalProject||project.objects.find(o=>o.id===ownerId)!==owner||!owner.segments.includes(segment))throw Error('对象已变化，请重新绑定');
-  change(()=>{if(parts){owner.modelSource=modelSource;owner.parts=parts;}segment.motion=motion;});toast('动作已绑定到此线段，请保存工程');
+  change(()=>{if(parts){owner.modelSource=modelSource;owner.parts=parts;}for(const s of members){s.motion=motion;s.motionOffset=s.startTime-unit.startTime;}});toast('动作已绑定到此线段，请保存工程');
  }catch(e){closeModal();toast('绑定失败：'+e.message,true);}
 });
-let scrubbing=false;$('#tracks').addEventListener('pointerdown',e=>{if(e.button!==0)return;scrubbing=true;playing=false;$('#tracks').setPointerCapture(e.pointerId);const track=e.target.closest('[data-track]');if(track)select(track.dataset.track,false,Number(e.target.closest('[data-segment]')?.dataset.segment??-1));scrub(e);});function scrub(e){view.startEdit=null;view.control.detach();previewRange=null;view.previewSegment=null;view.previewOwner=null;const rect=$('#tracks').getBoundingClientRect();setTime(Math.round((e.clientX-rect.left)/pixelsPerSecond*project.settings.fps)/project.settings.fps);}$('#tracks').addEventListener('pointermove',e=>{if(scrubbing)scrub(e);});$('#tracks').addEventListener('pointerup',()=>scrubbing=false);$('#tracksScroll').addEventListener('scroll',()=>$('#trackLabels').scrollTop=$('#tracksScroll').scrollTop);
+let scrubbing=false;$('#tracks').addEventListener('pointerdown',e=>{if(e.button!==0)return;scrubbing=true;playing=false;$('#tracks').setPointerCapture(e.pointerId);const piece=e.target.closest('[data-piece]');
+ const lane=e.target.closest('[data-owner-track]');
+ if(lane){
+  const at=(e.clientX-$('#tracks').getBoundingClientRect().left)/pixelsPerSecond;
+  const clip=piece?timelineClips[Number(piece.dataset.piece)]:closestTrackClip(lane.dataset.ownerTrack,at);
+  if(clip)selectTrackClip(clip);
+ }
+ scrub(e);});function scrub(e){view.startEdit=null;view.control.detach();previewRange=null;view.previewSegment=null;view.previewOwner=null;const rect=$('#tracks').getBoundingClientRect();setTime(Math.round((e.clientX-rect.left)/pixelsPerSecond*project.settings.fps)/project.settings.fps);}$('#tracks').addEventListener('pointermove',e=>{if(scrubbing)scrub(e);});$('#tracks').addEventListener('pointerup',()=>scrubbing=false);$('#tracksScroll').addEventListener('scroll',()=>$('#trackLabels').scrollTop=$('#tracksScroll').scrollTop);
 document.addEventListener('keydown',e=>{if(document.querySelector('.focus-picker-dialog[open]')){if(e.ctrlKey&&e.key.toLowerCase()==='s')e.preventDefault();return;}if(e.ctrlKey&&e.key.toLowerCase()==='s'){e.preventDefault();save(false,null,'all',e.shiftKey);return;}if(['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName)||e.target.isContentEditable||$('#dialog').open||document.querySelector('#modelLibrary[open]'))return;if(keyboardMove(e))return;if(e.code==='Space'){e.preventDefault();actions.play();}if(e.ctrlKey&&e.key.toLowerCase()==='z'){e.preventDefault();actions[e.shiftKey?'redo':'undo']();}if(e.key==='Escape'){setTool('select');$('#addMenu').classList.add('hidden');}if(e.key.toLowerCase()==='q')setTool('select');if(e.key.toLowerCase()==='w')setTool('translate');if(e.key.toLowerCase()==='e')setTool('rotate');if(e.key.toLowerCase()==='f')view.focus(selected);if(e.key==='Delete')deleteSelected();});
 window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
 window.addEventListener('error',e=>toast('界面发生错误：'+e.message,true));
-refresh();let last=performance.now();function animate(now){const dt=Math.min(.1,(now-last)/1000);last=now;if(playing){let t=time+dt;const end=previewRange?.end??project.settings.duration,start=previewRange?.start??0;if(t>=end){if(loop&&!previewRange)t=start+(t-start)%(end-start);else{t=end;playing=false;}}setTime(t);}else view.update(time);if(playing&&view.warning){playing=false;toast(view.warning,true);}syncControlFields();if(framePreview&&!currentBlenderFrame())clearBlenderFrame();showClipFrame(framePreview?null:renderedAtPlayhead());view.render();$('#playBtn').textContent=playing?'Ⅱ':'▶';$('#previewPlay').textContent=playing?'Ⅱ':'▶';$('#preview').classList.toggle('is-playing',playing);$('#previewPlay').setAttribute('aria-label',playing?'暂停视频':'播放完整视频');requestAnimationFrame(animate);}requestAnimationFrame(animate);
+refresh();let last=performance.now();function animate(now){const dt=Math.min(.1,(now-last)/1000);last=now;if(playing){let t=time+dt;const end=previewRange?.end??(filmEnd||project.settings.duration),start=previewRange?.start??0;if(t>=end){if(loop&&!previewRange)t=start+(t-start)%(end-start);else{t=end;playing=false;}}setTime(t);}else view.update(time);if(playing&&view.warning){playing=false;toast(view.warning,true);}syncControlFields();if(framePreview&&!currentBlenderFrame())clearBlenderFrame();showClipFrame(framePreview?null:renderedAtPlayhead());view.render();$('#playBtn').textContent=playing?'Ⅱ':'▶';$('#previewPlay').textContent=playing?'Ⅱ':'▶';$('#preview').classList.toggle('is-playing',playing);$('#previewPlay').setAttribute('aria-label',playing?'暂停视频':'播放完整视频');requestAnimationFrame(animate);}requestAnimationFrame(animate);
 try{const status=await (await fetch('/api/status')).json();token=status.token;defaultOutputDirectory=status.defaultOutputDirectory||'';legacyBackend=!modernWorkflow(status);nativeProjectOpen=status.capabilities?.includes('project-overwrite');$('#engineStatus').innerHTML=`<i style="${status.engineReady?'':'background:#e7b86a'}"></i>${legacyBackend?'后台版本过旧，请重新启动':status.engineReady?'本地引擎就绪':'引擎未连接'}`;$('#engineStatus').title='Vantage '+(status.version||'');await initDraft();}catch(e){toast('本地服务连接失败，请重新启动工作台',true);}
 
 function shotData(){if(!shotSelection)return {};const owner=project.objects.find(o=>o.id===shotSelection.owner),c=project.objects.find(o=>o.id===shotSelection.camera),ss=owner?units(owner):[],index=ss.findIndex(s=>s.id===shotSelection.sid);return {owner,c,ss,index,segment:ss[index],cfg:c?.shots?.[shotSelection.sid]};}
@@ -561,25 +598,43 @@ function keyboardMove(e){
  });
  return true;
 }
-function objectMenu(objectId,x,y){const o=project.objects.find(v=>v.id===objectId);if(!o||['CAMERA','TARGET'].includes(o.role))return;select(o.id);document.querySelector('.segment-menu')?.remove();const menu=document.createElement('div');menu.className='segment-menu';const add=(label,fn)=>{const b=document.createElement('button');b.textContent=label;b.onclick=()=>{menu.remove();fn();};menu.append(b);};if(canColor(o))add('设置定位颜色',()=>colorDialog(o));if(canGround(o))add('接触地面',()=>{playing=false;change(()=>groundObject(o,new Evaluator(project).pose(o,time),sceneGridMetrics(project).ground));});if(o.role!=='ENV'){add('设置运动轨迹',()=>{setTab('path');setTool('path');});add('导入动作并绑定线段',()=>{const list=edges(o);if(!list.length)return toast('请先为对象创建运动线段',true);modal('选择绑定线段',`<label class="field"><span>运动线段</span><select id="motionSegment">${list.map((edge,i)=>`<option value="${esc(edge.id)}">线段 ${i+1} · ${edge.startTime.toFixed(2)}–${edge.endTime.toFixed(2)} 秒</option>`).join('')}</select></label><p class="hint">动作文件需要与目标模型使用相同的骨架和绑定姿态。</p>`,[{label:'取消',run:closeModal},{label:'选择 GLB 动作',primary:true,run:()=>{$('#motionFile').dataset.owner=o.id;$('#motionFile').dataset.segment=$('#motionSegment').value;closeModal();$('#motionFile').click();}}]);});}for(const [role,label] of [['ACTOR','人物'],['PROP','物品'],['ENV','背景']])if(o.sceneSource?.kind!=='LIGHT'&&o.role!==role)add('设为'+label,()=>fieldChange('role',role));const geo=geometrySpecification(o);if(geo)add('设计尺寸',()=>geometryDialog(geo.shape,null,o,geo));if(o.modelSource){add('校准运动原点',()=>change(()=>calibrateOrigin(project,o)));add('校准正面 +90°',()=>actions.calibrate());}add((o.hidden?'显示':'隐藏')+(canGhostModel(o)?'模型':''),()=>change(()=>toggleVisibility(o)));add(o.locked?'解锁':'锁定',()=>change(()=>o.locked=!o.locked));add('复制',()=>duplicateObject(o));add('删除',()=>deleteSelected());document.body.append(menu);menu.style.left=Math.max(0,Math.min(x,innerWidth-menu.offsetWidth))+'px';menu.style.top=Math.max(0,Math.min(y,innerHeight-menu.offsetHeight))+'px';const dismiss=e=>{if(!menu.contains(e.target)){menu.remove();document.removeEventListener('pointerdown',dismiss);}};setTimeout(()=>document.addEventListener('pointerdown',dismiss),0);}
+function objectMenu(objectId,x,y){const o=project.objects.find(v=>v.id===objectId);if(!o||['CAMERA','TARGET'].includes(o.role))return;select(o.id);document.querySelector('.segment-menu')?.remove();const menu=document.createElement('div');menu.className='segment-menu';const add=(label,fn)=>{const b=document.createElement('button');b.textContent=label;b.onclick=()=>{menu.remove();fn();};menu.append(b);};if(o.role==='ACTOR'||o.role==='PROP')add('重命名',()=>renameObject(o));if(canColor(o))add('设置定位颜色',()=>colorDialog(o));if(canGround(o))add('接触地面',()=>{playing=false;change(()=>groundObject(o,new Evaluator(project).pose(o,time),sceneGridMetrics(project).ground));});if(o.role!=='ENV'){add('设置运动轨迹',()=>{setTab('path');setTool('path');});add('导入动作并绑定线段',()=>{const list=edges(o);if(!list.length)return toast('请先为对象创建运动线段',true);modal('选择绑定线段',`<label class="field"><span>运动线段</span><select id="motionSegment">${list.map((edge,i)=>`<option value="${esc(edge.id)}">线段 ${i+1} · ${edge.startTime.toFixed(2)}–${edge.endTime.toFixed(2)} 秒</option>`).join('')}</select></label><p class="hint">动作文件需要与目标模型使用相同的骨架和绑定姿态。</p>`,[{label:'取消',run:closeModal},{label:'选择 GLB 动作',primary:true,run:()=>{$('#motionFile').dataset.owner=o.id;$('#motionFile').dataset.segment=$('#motionSegment').value;closeModal();$('#motionFile').click();}}]);});}for(const [role,label] of [['ACTOR','人物'],['PROP','物品'],['ENV','背景']])if(o.sceneSource?.kind!=='LIGHT'&&o.role!==role)add('设为'+label,()=>fieldChange('role',role));const geo=geometrySpecification(o);if(geo)add('设计尺寸',()=>geometryDialog(geo.shape,null,o,geo));if(o.modelSource){add('校准运动原点',()=>change(()=>calibrateOrigin(project,o)));add('校准正面 +90°',()=>actions.calibrate());}add((o.hidden?'显示':'隐藏')+(canGhostModel(o)?'模型':''),()=>change(()=>toggleVisibility(o)));add(o.locked?'解锁':'锁定',()=>change(()=>o.locked=!o.locked));add('复制',()=>duplicateObject(o));add('删除',()=>deleteSelected());document.body.append(menu);menu.style.left=Math.max(0,Math.min(x,innerWidth-menu.offsetWidth))+'px';menu.style.top=Math.max(0,Math.min(y,innerHeight-menu.offsetHeight))+'px';const dismiss=e=>{if(!menu.contains(e.target)){menu.remove();document.removeEventListener('pointerdown',dismiss);}};setTimeout(()=>document.addEventListener('pointerdown',dismiss),0);}
 function openModelsAt(placement){ensureObjectLayer();playing=false;openModelLibrary(async (name,scale=1)=>{const {job}=await request('/api/models/import',{name});const result=await waitJob(job,'导入模型');closeModal();const os=result.result.objects;for(const o of os){o.role='ACTOR';o.lockZ=true;o.orientation='PATH';o.frontAxis='-Y';o.scale=[scale,scale,scale];o.modelSource.unitScale=scale;if(placement)o.position=[placement[0],placement[1],0];}const checked=await request('/api/validate',{project:{...project,objects:[...project.objects,...os.map(o=>({...o,id:'check-'+id()}))]}});if(checked.errors.length)throw Error(checked.errors.join('；'));change(()=>{for(const o of os)o.id=id();project.objects.push(...os);selected=os[0].id;multi=new Set([selected]);tab='object';});setView('FREE');view.focus(selected);toast('模型已加入，可撤销；请保存工程');});}
 function emptyCreateMenu(point,x,y){
  document.querySelector('.segment-menu')?.remove();const menu=document.createElement('div');menu.className='segment-menu';menu.style.left=Math.min(x,innerWidth-220)+'px';menu.style.top=Math.min(y,innerHeight-200)+'px';
  for(const [label,shape] of [['创建人物白模','CHARACTER'],['导入模型','MODEL'],['创建立方体','BOX'],['创建球体','SPHERE'],['创建圆柱体','CYLINDER'],['创建圆锥体','CONE']]){const b=document.createElement('button');b.textContent=label;b.onclick=()=>{menu.remove();if(shape==='MODEL')openModelsAt(point);else addObject(shape,point);};menu.append(b);}document.body.append(menu);const dismiss=e=>{if(!menu.contains(e.target)){menu.remove();document.removeEventListener('pointerdown',dismiss);}};setTimeout(()=>document.addEventListener('pointerdown',dismiss),0);
 }
+let mergeAnchor=null;
+function mergePathClick(ownerId,sid){
+ const owner=project.objects.find(o=>o.id===ownerId);
+ const unit=owner&&pathUnit(owner,sid);
+ if(!unit?.members||!['ACTOR','PROP'].includes(owner.role)||owner.locked)return toast('请选择可编辑的人物或物品路径',true);
+ if(unit.members.some(id=>project.objects.some(c=>c.shots?.[id])||owner.segments.find(s=>s.id===id)?.motion))return toast('已设置镜头或绑定动作的路径不能合并',true);
+ if(mergeAnchor?.project!==project)mergeAnchor=null;
+ if(mergeAnchor){
+  if(mergeAnchor.owner!==ownerId)return toast('不能合并不同对象的路径',true);
+  if(mergeAnchor.sid!==unit.id){
+   change(()=>{const merged=mergePaths(project,owner,mergeAnchor.sid,unit.id);view.segmentId=merged;mergeAnchor={project,owner:ownerId,sid:merged};});
+   return;
+  }
+ }
+ mergeAnchor={project,owner:ownerId,sid:unit.id};view.segmentId=unit.id;view.refreshPaths();toast('按住 Ctrl 点击相邻路径合并，松开结束');
+}
+window.addEventListener('keyup',e=>{if(e.key==='Control'||e.key==='Escape')mergeAnchor=null;});
+window.addEventListener('blur',()=>{mergeAnchor=null;});
 function segmentMenu(ownerId,sid,x,y){
  if(view.editLayer==='CAMERA'&&ownerId!==camera()?.id&&!freeAimShot(project,ownerId))return toast('相机图层的物品轨迹只读');
- document.querySelector('.segment-menu')?.remove();const owner=editObject(project,project.objects.find(o=>o.id===ownerId)),unit=owner&&units(owner).find(s=>s.id===sid);if(!unit)return;
+ document.querySelector('.segment-menu')?.remove();const owner=editObject(project,project.objects.find(o=>o.id===ownerId)),unit=owner&&pathUnit(owner,sid);if(!unit)return;
  playing=false;view.segmentId=sid;view.refreshPaths();const menu=document.createElement('div');menu.className='segment-menu';menu.style.left=Math.min(x,innerWidth-220)+'px';menu.style.top=Math.min(y,innerHeight-180)+'px';
  const button=(label,fn)=>{const b=document.createElement('button');b.textContent=label;b.onclick=()=>{menu.remove();fn();};menu.append(b);};
- const c=camera();if(c&&['ACTOR','PROP'].includes(owner.role))button('设置镜头',()=>openShot(ownerId,sid,c.id));
+ const c=camera();if(c&&['ACTOR','PROP'].includes(owner.role))button('设置镜头',()=>openShot(ownerId,unit.id,c.id));
  if(unit.kind!=='DWELL'){
  if(['ACTOR','PROP'].includes(owner.role)){
   button('绑定动作（GLB）',()=>{$('#motionFile').dataset.owner=ownerId;$('#motionFile').dataset.segment=sid;$('#motionFile').click();});
-  if((owner.segments||[]).find(s=>s.id===sid)?.motion)button('解除动作',()=>change(()=>{delete owner.segments.find(s=>s.id===sid).motion;}));
+  if((owner.segments||[]).find(s=>s.id===sid)?.motion)button('解除动作',()=>change(()=>{for(const s of owner.segments)if(unit.members.includes(s.id)){delete s.motion;delete s.motionOffset;}}));
  }
  button('修改运动时长',()=>modal('线段运动时长',`<input id="unitDuration" type="number" min="0.001" step="0.1" value="${unit.endTime-unit.startTime}">`,[{label:'应用',run:()=>{const value=Number($('#unitDuration').value);change(()=>setUnitDuration(owner,sid,value));closeModal();}}]));
- button('删除此线段',()=>change(()=>{deleteSegment(project,owner,sid);finishPathDeletion(owner);}));
+ button('删除此线段',()=>change(()=>{for(const id of unit.members)deleteSegment(project,owner,id);finishPathDeletion(owner);}));
  button('在线段中插入控制点',()=>change(()=>{splitSegment(project,owner,sid);shotSelection=null;view.startEdit=null;selected=owner.id;tab='path';}));
  }else button('取消停留',()=>change(()=>setDwell(owner,unit.a,0)));
  document.body.append(menu);const dismiss=e=>{if(!menu.contains(e.target)){menu.remove();document.removeEventListener('pointerdown',dismiss);}};setTimeout(()=>document.addEventListener('pointerdown',dismiss),0);
@@ -588,8 +643,10 @@ function openShot(ownerId,sid,cameraId,mode=null,inherit=false){
  const o=project.objects.find(o=>o.id===ownerId),c=project.objects.find(o=>o.id===cameraId),unit=units(o).find(s=>s.id===sid);if(!unit)return;
  if(!mode&&c.shots?.[sid])mode=c.shots[sid].mode;
  if(!mode){modal('设置镜头',`<p>${esc(o.name)} · ${unit.startTime.toFixed(2)}–${unit.endTime.toFixed(2)} 秒</p><label class="field"><span>继承上一镜头相机状态</span><select id="inheritPrevious"><option value="no">否 · 独立初始配置</option><option value="yes">是 · 一次性复制结束状态</option></select></label>`,['FREE','TRACK'].map(m=>({label:m==='FREE'?'自由模式':'跟踪模式',primary:true,run:()=>{const inherit=$('#inheritPrevious').value==='yes';closeModal();openShot(ownerId,sid,cameraId,m,inherit);}})));return;}
- change(()=>{if(!c.shots?.[sid])configureShot(project,c,o,sid,mode,inherit);project.editShotId=sid;});if(!c.shots?.[sid])return;
- shotSelection={owner:ownerId,sid,camera:cameraId};selected=cameraId;multi=new Set([selected]);tab='shot';view.segmentId=sid;previewRange=null;view.previewSegment=sid;view.previewOwner=null;view.startEdit={camera:cameraId,position:[...c.shots[sid].start.position],locked:false};view.editLayer='CAMERA';$('#editLayer').value='CAMERA';view.setTool('translate');setTime(unit.startTime);refresh();
+ if(!c.shots?.[sid])change(()=>configureShot(project,c,o,sid,mode,inherit));
+ if(!c.shots?.[sid])return;
+ project.editShotId=sid;
+ shotSelection={owner:ownerId,sid,camera:cameraId};selected=cameraId;multi=new Set([selected]);tab='shot';view.segmentId=sid;previewRange=null;view.previewSegment=sid;view.previewOwner=null;view.startEdit={camera:cameraId,position:[...c.shots[sid].start.position],locked:false};view.editLayer='CAMERA';$('#editLayer').value='CAMERA';view.setTool('translate');setTime(units(o).find(s=>s.id===sid).startTime);refresh();
 }
 function renderShotPanel(){$$('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab==='camera'));const {owner,c,segment,cfg,index}=shotData();if(!cfg||!segment){shotSelection=null;tab='path';renderInspector();return;}const locked=cfg.controlVersion!==3&&cfg.inherit&&index>0;let start=cfg.start,error='';try{const ev=new Evaluator(project);if(locked)start=ev.previous(c,owner,index);ev.camera(c,segment.startTime,segment.id);}catch(e){error=e.message;}if(view.startEdit)view.startEdit={camera:c.id,position:[...start.position],locked};const f=(label,key,value,extra='')=>`<label class="field"><span>${label}</span><input data-shot="${key}" type="number" step="0.1" value="${value}" ${extra}></label>`;const sel=(label,key,choices,value)=>`<label class="field"><span>${label}</span><select data-shot="${key}">${options(choices,value)}</select></label>`;
  $('#inspector').innerHTML=section('当前镜头',sel('拍摄模式','mode',{FREE:'自由模式',TRACK:'跟踪模式'},cfg.mode)+(cfg.mode==='TRACK'?sel('跟踪物品','focusTarget',Object.fromEntries(project.objects.filter(o=>['ACTOR','PROP'].includes(o.role)&&edges(o).length&&!pathErrors(o).length).map(o=>[o.id,o.name])),cfg.focusTarget):'')+`<p class="shot-info">${esc(owner.name)} · ${segment.kind==='DWELL'?'停留点':'运动线段'}<br>${segment.a.position.map(v=>v.toFixed(2)).join(', ')} → ${segment.b.position.map(v=>v.toFixed(2)).join(', ')}<br>${segment.startTime.toFixed(3)}–${segment.endTime.toFixed(3)} 秒 · 时长 ${(segment.endTime-segment.startTime).toFixed(3)} 秒</p>`)+section('视线焦点',(cfg.mode==='FREE'?'<p class="hint">辅助点用于环绕与推进。视线路径生效时由 T 控制摇摄和俯仰，Roll 和焦距仍可调整。清空视线路径可恢复原有角度设置。</p>':`<div id="focusPicker" class="focus-picker"></div><p class="hint">可放大窗口精确选点；左键选点，右键旋转，中键平移，滚轮缩放。</p>`)+(cfg.mode==='FREE'?cfg.focusWorld:cfg.focusLocal).map((v,i)=>f((cfg.mode==='FREE'?'辅助视点 ':'局部焦点 ')+'XYZ'[i],'focus-'+i,v)).join(''))+section('起始机位',shotStartPanel(cfg,start,index,locked,f,sel))+shotMotionPanel(cfg,start,segment,locked,f,sel)+(cfg.mode==='FREE'?section('路径与关键帧','<div class="inline-actions"><button data-action="editCameraPath">编辑相机路径</button><button data-action="editAimPath">编辑视线目标路径</button></div>')+keyEditor(editObject(project,c),'angles','关键角度')+keyEditor(editObject(project,c),'lenses','焦距关键帧'):'')+section('预演',`<p class="shot-warning">${esc(error)}</p><div class="inline-actions"><button id="previewShot">当前镜头预演</button><button data-action="exportCurrent">导出当前视频</button></div><button id="clearShot">取消本段镜头配置</button>`);
@@ -598,7 +655,7 @@ function renderShotPanel(){$$('[data-tab]').forEach(b=>b.classList.toggle('activ
  if($('#placeOrbitStart'))$('#placeOrbitStart').onclick=()=>change(()=>{const focus=shotFocus(cfg,segment.startTime);cfg.start.position=[focus[0]+cfg.radius,focus[1],focus[2]];setTime(segment.startTime);});
  if($('#convertShot'))$('#convertShot').onclick=()=>change(()=>{convertShot(project,c,owner,segment.id);view.startEdit=null;});
  if($('#inheritShot'))$('#inheritShot').onclick=()=>change(()=>{inheritShot(project,c,owner,segment.id);view.startEdit=null;});
- $('#previewShot').onclick=()=>playShot();$('#clearShot').onclick=()=>change(()=>{delete c.shots[segment.id];shotSelection=null;view.startEdit=null;tab='path';selected=owner.id;});
+ $('#previewShot').onclick=()=>playShot();$('#clearShot').onclick=()=>change(()=>{const raw=owner.segments.find(s=>s.id===segment.id);if(raw)raw.clipCuts=[...(cfg.clipCuts||[])];delete c.shots[segment.id];shotSelection=null;view.startEdit=null;tab='path';selected=owner.id;});
  if(cfg.mode!=='FREE')disposeFocus=focusPicker($('#focusPicker'),project.objects.find(o=>o.id===cfg.focusTarget),cfg.focusLocal,{begin:()=>{playing=false;gesture=clone(project);},move:p=>{const current=shotData().cfg;current.focusLocal=p;syncOrbit(project,current,segment.startTime);view.evaluator=new Evaluator(project);view.update(time);syncShotFields();p.forEach((v,i)=>{const el=$(`[data-shot="focus-${i}"]`);if(el)el.value=Number(v.toFixed(4));});},end:()=>{if(gesture){undo.push(gesture);gesture=null;redo.length=0;markDirty();renderTimeline();$('#undoBtn').disabled=false;$('#redoBtn').disabled=true;}}});
 }
 function playShot(){const {owner,c,segment}=shotData();if(!segment)return;const errors=pathErrors(owner);if(errors.length)return toast(errors.join('；'),true);try{new Evaluator(project).camera(c,segment.startTime,segment.id);}catch(e){return toast(e.message,true);}view.startEdit=null;view.control.detach();previewRange={start:segment.startTime,end:segment.endTime};view.previewSegment=segment.id;view.previewOwner=null;setTime(segment.startTime);playing=true;}
@@ -643,7 +700,7 @@ $('#inspector').addEventListener('change',e=>{
  // Update dependent values without replacing the focused input.
  if(e.target.tagName==='SELECT'){const scroll=$('#inspector').scrollTop;renderInspector();$('#inspector').scrollTop=scroll;}
 });
-$('#inspector').addEventListener('click',e=>{const b=e.target.closest('button');if(b?.dataset.edge){const r=b.getBoundingClientRect();segmentMenu(b.dataset.owner,b.dataset.edge,r.left,r.bottom);}if(b?.dataset.split)change(()=>{splitSegment(project,active(),b.dataset.split);});});
+$('#inspector').addEventListener('click',e=>{const b=e.target.closest('button');if(b?.dataset.edge){if(e.ctrlKey)return mergePathClick(b.dataset.owner,b.dataset.edge);const r=b.getBoundingClientRect();segmentMenu(b.dataset.owner,b.dataset.edge,r.left,r.bottom);}if(b?.dataset.split)change(()=>{splitSegment(project,active(),b.dataset.split);});});
 $('#tracks').addEventListener('contextmenu',e=>{const edge=e.target.closest('[data-edge-id]');if(edge){e.preventDefault();segmentMenu(edge.dataset.track,edge.dataset.edgeId,e.clientX,e.clientY);}});
 actions.repairGap=()=>change(()=>{const o=active();for(let i=1;i<o.nodes.length;i++){const a=o.nodes[i-1],b=o.nodes[i];if(!o.segments.some(s=>s.start===a.id&&s.end===b.id))o.segments.push({id:id(),start:a.id,end:b.id});}syncSegments(o);retime(o);});
 
@@ -694,29 +751,80 @@ actions.editAimPath=()=>{
 };
 actions.editCameraPath=()=>{selected=camera().id;setTab('path');view.startEdit=null;view.select(selected,0);};
 
-function videoTrack(){
+function renderVideoTracks(){
  const fps=project.settings.fps;
- timelineClips=shotEntries(project).flatMap(({unit,cfg,c,owner})=>{
+ timelineClips=videoEntries(project).flatMap(({unit,cfg,c,owner})=>{
   const count=Math.max(1,Math.ceil((unit.endTime-unit.startTime)*fps-1e-8));
-  const cuts=(cfg.clipCuts||[]).map(t=>Math.round(t*fps)).filter(i=>i>0&&i<count);
+  const cuts=((cfg||unit).clipCuts||[]).map(t=>Math.round(t*fps)).filter(i=>i>0&&i<count);
   const bounds=[...new Set([0,...cuts,count])].sort((a,b)=>a-b);
   return bounds.slice(0,-1).map((first,i)=>({
    key:JSON.stringify([c.id,unit.id,first]),sid:unit.id,owner:owner.id,camera:c.id,cfg,first,last:bounds[i+1],
    startTime:unit.startTime+first/fps,endTime:bounds[i+1]===count?unit.endTime:unit.startTime+bounds[i+1]/fps,
-   unitStart:unit.startTime,label:unit.kind==='DWELL'?'停留':'镜头',name:owner.name
+   unitStart:unit.startTime,label:cfg?(unit.kind==='DWELL'?'停留':'镜头'):'当前机位',name:owner.name
   }));
  });
- return '<div class="track-lane video-track">'+timelineClips.map((c,i)=>{
+ filmEnd=timelineClips.reduce((end,c)=>Math.max(end,c.endTime),0);
+ const order=videoTrackOrder(camera(),project);
+ const rank=new Map(order.map((id,i)=>[id,i]));
+ timelineClips.sort((a,b)=>rank.get(a.owner)-rank.get(b.owner)||a.startTime-b.startTime);
+ const tracks=new Map();
+ timelineClips.forEach((c,i)=>{
+  if(!tracks.has(c.owner))tracks.set(c.owner,{name:c.name,clips:[]});
   const cached=renderedClips.has(c.key);
-  return `<div class="segment video-clip ${cached?'rendered':''}" data-clip="${esc(c.sid)}" data-owner="${esc(c.owner)}" data-camera="${esc(c.camera)}" data-piece="${i}" title="${esc(c.name)} · ${c.startTime.toFixed(2)}–${c.endTime.toFixed(2)} 秒${cached?' · 已渲染':''}" style="left:${c.startTime*pixelsPerSecond}px;width:${(c.endTime-c.startTime)*pixelsPerSecond}px">${c.label} · ${(c.endTime-c.startTime).toFixed(2)}s</div>`;
- }).join('')+'</div>';
+  tracks.get(c.owner).clips.push(`<div class="segment video-clip ${c.cfg?'':'unconfigured'} ${cached?'rendered':''}" aria-current="${shotSelection?.sid===c.sid}" data-clip="${esc(c.sid)}" data-owner="${esc(c.owner)}" data-camera="${esc(c.camera)}" data-piece="${i}" title="${esc(c.name)} · ${c.startTime.toFixed(2)}–${c.endTime.toFixed(2)} 秒${cached?' · 已渲染':''}" style="left:${c.startTime*pixelsPerSecond}px;width:${(c.endTime-c.startTime)*pixelsPerSecond}px">${c.label} · ${(c.endTime-c.startTime).toFixed(2)}s</div>`);
+ });
+ $('#trackLabels').innerHTML=[...tracks].map(([id,t])=>`<div class="track-label ${shotSelection?.owner===id?'active':''}" draggable="true" data-owner-track="${esc(id)}" title="${esc(t.name)} · 上下拖动调整优先级">视频轨道 · ${esc(t.name)}</div>`).join('')||'<div class="track-label">视频轨道</div>';
+ $('#trackLanes').innerHTML=[...tracks].map(([id,t])=>`<div class="track-lane video-track" data-owner-track="${esc(id)}">${t.clips.join('')}</div>`).join('');
 }
+let draggedTrack=null;
+const trackLabels=$('#trackLabels');
+trackLabels.addEventListener('dragstart',e=>{
+ const row=e.target.closest('[data-owner-track]');
+ if(!row)return;
+ draggedTrack=row.dataset.ownerTrack;
+ e.dataTransfer.effectAllowed='move';
+ e.dataTransfer.setData('text/plain',draggedTrack);
+});
+trackLabels.addEventListener('dragover',e=>{
+ if(draggedTrack&&e.target.closest('[data-owner-track]')){e.preventDefault();e.dataTransfer.dropEffect='move';}
+});
+trackLabels.addEventListener('drop',e=>{
+ const target=e.target.closest('[data-owner-track]')?.dataset.ownerTrack;
+ if(!draggedTrack||!target)return;
+ e.preventDefault();
+ const c=camera(),order=videoTrackOrder(c,project),from=order.indexOf(draggedTrack),to=order.indexOf(target);
+ draggedTrack=null;
+ if(from<0||to<0||from===to)return;
+ order.splice(to,0,order.splice(from,1)[0]);
+ playing=false;view.startEdit=null;view.previewSegment=null;view.previewOwner=null;previewRange=null;view.control.detach();
+ change(()=>{c.videoTracks=order;},true);
+});
+trackLabels.addEventListener('dragend',()=>{draggedTrack=null;});
+function selectTrackClip(clip){
+ if(clip.cfg)return openShot(clip.owner,clip.sid,clip.camera);
+ select(clip.owner);view.segmentId=clip.sid;setTab('path');view.refreshPaths();
+}
+function closestTrackClip(owner,at){
+ const clips=timelineClips.filter(c=>c.owner===owner);
+ return clips.find(c=>c.startTime<=at&&at<c.endTime)||clips.reduce((best,c)=>{
+  const distance=x=>Math.max(0,x.startTime-at,at-x.endTime);
+  return !best||distance(c)<distance(best)?c:best;
+ },null);
+}
+$('#trackLabels').addEventListener('click',e=>{
+ const row=e.target.closest('[data-owner-track]');
+ if(!row)return;
+ const clip=closestTrackClip(row.dataset.ownerTrack,time);
+ if(clip){playing=false;selectTrackClip(clip);}
+});
 function splitClip(clip){
  const fps=project.settings.fps;
  const cut=Math.round((time-clip.unitStart)*fps);
- if(cut<=clip.first||cut>=clip.last)return toast('请把播放头移到此视频条内的切分帧',true);
+ if(cut<=clip.first||cut>=clip.last)return toast('请把播放头移到此轨道片段内的切分帧',true);
  change(()=>{
-  clip.cfg.clipCuts=[...(clip.cfg.clipCuts||[]),cut/fps].sort((a,b)=>a-b);
+  const owner=project.objects.find(o=>o.id===clip.owner);
+  const source=clip.cfg||owner.segments.find(s=>s.id===clip.sid);
+  source.clipCuts=[...(source.clipCuts||[]),cut/fps].sort((a,b)=>a-b);
   const previous=renderedClips.get(clip.key);
   if(previous){
    renderedClips.delete(clip.key);
@@ -728,9 +836,9 @@ async function renderClip(clip,sceneAsset){
  const stamp=revision;
  framePending=true;
  try{
-  modal('渲染视频条','<p>正在提交所选视频条…</p>');
+  modal('渲染轨道片段','<p>正在提交所选轨道片段…</p>');
   const {job,frames}=await request('/api/render-clip',{project,segment:clip.sid,owner:clip.owner,firstFrame:clip.first,sceneAsset});
-  await waitJob(job,'渲染视频条');
+  await waitJob(job,'渲染轨道片段');
   closeModal();
   if(stamp!==revision){await request('/api/clip-release',{job});return;}
   const previous=renderedClips.get(clip.key);
@@ -741,8 +849,8 @@ async function renderClip(clip,sceneAsset){
   previewRange=null;
   setTime(clip.startTime);
   renderTimeline();
-  toast('视频条已渲染，共 '+frames+' 帧');
- }catch(e){closeModal();toast('视频条渲染未完成：'+e.message,true);}
+  toast('轨道片段已渲染，共 '+frames+' 帧');
+ }catch(e){closeModal();toast('轨道片段渲染未完成：'+e.message,true);}
  finally{framePending=false;}
 }
 $('#tracks').addEventListener('contextmenu',e=>{
@@ -760,12 +868,17 @@ $('#tracks').addEventListener('contextmenu',e=>{
  if(clip){
   const piece=timelineClips[Number(clip.dataset.piece)];
   add('在播放头处切分',()=>splitClip(piece));
-  add('渲染此视频条',()=>chooseRenderEnvironment(asset=>renderClip(piece,asset)));
-  if(renderedClips.has(piece.key))add('导出此视频条（MP4）',()=>{
+  add('渲染轨道片段',()=>chooseRenderEnvironment(asset=>renderClip(piece,asset)));
+  add('导出轨道片段（MP4）',()=>{
    exportClip=piece;
    save(true,null,'clip');
   });
-  add('编辑镜头',()=>openShot(piece.owner,piece.sid,piece.camera));
+  add(piece.cfg?'编辑镜头':'设置镜头',()=>openShot(piece.owner,piece.sid,piece.camera));
+  add('播放此片段',()=>{view.startEdit=null;view.control.detach();view.previewSegment=piece.sid;previewRange={start:piece.startTime,end:piece.endTime};setTime(piece.startTime);playing=true;});
+  if(!piece.cfg)add('删除此片段及对应路径',()=>change(()=>{
+   deletePathRange(project,project.objects.find(o=>o.id===piece.owner),piece.sid,piece.startTime,piece.endTime);
+   playing=false;previewRange=null;view.previewSegment=null;
+  }));
  }
  document.body.append(menu);
  menu.style.left=Math.max(0,Math.min(e.clientX,innerWidth-menu.offsetWidth))+'px';

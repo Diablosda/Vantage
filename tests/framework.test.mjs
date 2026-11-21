@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
-import {migrate,configureShot,currentShot,Evaluator,setDwell,setUnitDuration,units,splitSegment,pruneCurrentShot,upgradeFramework,appendPoint,newShot} from '../web/segments.js';
+import {mergePaths,deletePathRange,SegmentMotion,pathErrors,videoTrackOrder,shotAt,migrate,configureShot,currentShot,Evaluator,setDwell,setUnitDuration,units,splitSegment,pruneCurrentShot,upgradeFramework,appendPoint,newShot} from '../web/segments.js';
 const object=(id,role)=>({id,name:id,role,position:[0,0,0],rotation:[0,0,0],scale:[1,1,1],parts:[],nodes:[],angles:[],lenses:[],rolls:[],orientation:'FIXED'});
 function fixture(){
  const a=object('a','PROP'),b=object('b','PROP'),c=object('c','CAMERA');
@@ -20,7 +20,7 @@ test('dwell and segment timing preserve movement duration; other objects keep gl
 });
 test('retention and inheritance snapshot previous end; paths and base camera remain unchanged',()=>{
  const {p,a,b,c}=fixture(),before=JSON.stringify([a,b]);let cfg=configureShot(p,c,a,a.segments[0].id,'FREE');cfg.motion='DIAGONAL';cfg.velocity=[1,2,0];cfg.lensEnd=80;
- const end=new Evaluator(p).camera(c,2),old=cfg;
+ const end=new Evaluator(p).camera(c,2,a.segments[0].id),old=cfg;
  cfg=configureShot(p,c,b,b.segments[1].id,'FREE',true);assert.deepEqual(cfg.start.position,end.position);assert.equal(cfg.lens,80);assert.equal(Object.keys(c.shots).length,2);
  old.velocity[0]=100;assert.equal(cfg.velocity[0],1);assert.equal(JSON.stringify([a,b]),before); // no path edits
  cfg=configureShot(p,c,a,a.segments[0].id,'FREE');assert.deepEqual(cfg.start.position,c.position);assert.equal(cfg.speed,0);
@@ -95,4 +95,81 @@ e=Evaluator(p);print(json.dumps([e.camera(e.objects['c'],t) for t in [2,3,4]]))`
  assert.deepEqual(cfg.aimMotion.nodes[0].position,[0,0,1]);
  cfg.aimMotion.nodes=[];cfg.aimMotion.segments=[];
  assert.deepEqual(new Evaluator(p).camera(c,3,sid),original);
+});
+
+test('overlapping tracks select the top camera at global time in previews and exports',()=>{
+ const {p,a,b,c}=fixture();
+ for(const [o,duration] of [[a,3],[b,4]]){
+  o.nodes=o.nodes.slice(0,2);o.segments=o.segments.slice(0,1);
+  setUnitDuration(o,o.segments[0].id,duration);
+  const cfg=configureShot(p,c,o,o.segments[0].id,'FREE');
+  cfg.lens=o===a?30:60;cfg.lensEnd=cfg.lens+duration;
+ }
+ assert.deepEqual(videoTrackOrder(c),['a','b']);
+ const paths=JSON.stringify([a,b]),ev=new Evaluator(p),sid=a.segments[0].id;
+ for(const [order,lenses] of [[['a','b'],[30,32.5,63,64]],[['b','a'],[60,62.5,63,64]]]){
+  c.videoTracks=order;
+  assert.deepEqual([0,2.5,3,4].map(t=>ev.camera(c,t).lens),lenses);
+  assert.equal(ev.pose(b,3).position[0],1.5);
+  assert.equal(ev.camera(c,2,sid).lens,32);
+  assert.equal(shotAt(p,c,4.1),null);
+  const r=spawnSync('python',['-B','-c',`import json,sys
+from backend.model import validate
+from backend.segments import Evaluator
+from backend.export_plan import export_times,clip_times
+p=json.load(sys.stdin);assert not validate(p,True),validate(p,True)
+e=Evaluator(p);c=e.objects['c'];assert e.pose(e.objects['b'],3)['position'][0]==1.5
+assert export_times(p)==[i/12 for i in range(48)]
+a=e.objects['a'];sid=a['segments'][0]['id']
+assert clip_times(p,'a',sid,0)==[i/12 for i in range(36)]
+assert e.camera(c,2,sid)['lens']==32
+print(json.dumps([e.camera(c,t)['lens'] for t in [0,2.5,3,4]]))`],{input:JSON.stringify(p),encoding:'utf8'});
+  assert.equal(r.status,0,r.stderr);assert.deepEqual(JSON.parse(r.stdout),lenses);
+ }
+ assert.equal(JSON.stringify([a,b]),paths);
+});
+
+test('adjacent paths merge without changing the turn or allowing configured shots and actions',()=>{
+ const {p,a,b,c}=fixture(),[left,right]=a.segments.map(s=>s.id);
+ const samples=[.2,1.7,2.3,3.7].map(t=>new Evaluator(p).pose(a,t));
+ assert.throws(()=>mergePaths(p,a,left,b.segments[0].id));
+ a.segments[1].motion={name:'bound'};assert.throws(()=>mergePaths(p,a,left,right));delete a.segments[1].motion;
+ configureShot(p,c,a,right,'FREE');assert.throws(()=>mergePaths(p,a,right,left));delete c.shots[right];
+ const sid=mergePaths(p,a,right,left);
+ assert.deepEqual(units(a)[0].members,[left,right]);assert.equal(units(a).length,1);
+ assert.deepEqual([.2,1.7,2.3,3.7].map(t=>new Evaluator(p).pose(a,t)),samples);
+ configureShot(p,c,a,sid,'FREE');assert.equal(currentShot(p).unit.endTime,4);
+});
+test('top draft track shows base camera and clips delete only their matching motion interval',()=>{
+ const {p,a,b,c}=fixture();
+ const cfg=configureShot(p,c,b,b.segments[0].id,'FREE');cfg.motion='DIAGONAL';cfg.velocity=[5,0,0];
+ c.videoTracks=[a.id,b.id];
+ let ev=new Evaluator(p);
+ assert.deepEqual(ev.camera(c,1).position,ev.base(c,1).position);
+ assert.notDeepEqual(ev.camera(c,1,b.segments[0].id).position,ev.base(c,1).position);
+ a.smooth=true;a.nodes[1].radius=.8;a.nodes[2].position=[2,2,0];a.nodes[1].easing='IN_OUT';
+ const id=mergePaths(p,a,...a.segments.map(s=>s.id));
+ a.segments[0].clipCuts=[.5,1.5];
+ const times=[0,.25,1.5,1.75,2,2.75,4];
+ const before=new SegmentMotion(a),positions=times.map(t=>before.at(t)[0]);
+ deletePathRange(p,a,id,.5,1.5);
+ assert.deepEqual(units(a).map(u=>[u.startTime,u.endTime]),[[0,.5],[1.5,4]]);
+ const after=new SegmentMotion(a);
+ times.forEach((t,i)=>assert(Math.hypot(...after.at(t)[0].map((v,j)=>v-positions[i][j]))<1e-7));
+ assert.deepEqual(pathErrors(a,true),[]);
+ assert.equal(shotAt(p,c,1).owner.id,b.id);
+ const saved=JSON.parse(JSON.stringify(p));assert.deepEqual(units(saved.objects[0]),units(a));
+ const python=spawnSync('python',['-B','-c',`import json,sys
+from backend.model import validate
+from backend.export_plan import clip_times
+from backend.segments import Evaluator
+p,times=json.load(sys.stdin)
+assert not validate(p,True),validate(p,True)
+ev=Evaluator(p);a,b,c=p['objects']
+assert len(clip_times(p,a['id'],a['segments'][0]['id'],0))==6
+assert ev.camera(c,.25)['position']==ev.base(c,.25)['position']
+assert ev.camera(c,1)['position']!=ev.base(c,1)['position']
+print(json.dumps([ev.pose(a,t)['position'] for t in times]))`],{input:JSON.stringify([p,times]),encoding:'utf8'});
+ assert.equal(python.status,0,python.stderr);
+ JSON.parse(python.stdout).forEach((v,i)=>assert(Math.hypot(...v.map((x,j)=>x-positions[i][j]))<1e-7));
 });

@@ -12,16 +12,85 @@ const bez=(a,b,c,t)=>add(add(mul(a,(1-t)**2),mul(b,2*t*(1-t))),mul(c,t*t));
 export function migrate(project){for(const o of project.objects){o.nodes??=[];o.nodes.forEach((n,i)=>n.id??=`${o.id}-point-${i}`);if(!o.segments)o.segments=o.nodes.slice(1).map((n,i)=>({id:`${o.id}-segment-${i}`,start:o.nodes[i].id,end:n.id}));syncSegments(o);}return project;}
 export function syncSegments(o){const ns=new Map(o.nodes.map(n=>[n.id,n]));for(const s of o.segments||[]){const a=ns.get(s.start),b=ns.get(s.end);if(a&&b){s.startTime=a.time+(a.dwell||0);s.endTime=b.time;}}}
 export function edges(o){const ns=new Map(o.nodes.map(n=>[n.id,n]));return (o.segments||[]).map(s=>({...s,a:ns.get(s.start),b:ns.get(s.end)})).filter(s=>s.a&&s.b).sort((a,b)=>a.startTime-b.startTime);}
-export function pathErrors(o,full=false){const errors=[],ns=o.nodes||[],ss=edges(o);if(new Set(ns.map(n=>n.id)).size!==ns.length)errors.push('控制点标识重复');if(new Set((o.segments||[]).map(s=>s.id)).size!==(o.segments||[]).length)errors.push('线段标识重复');if(ss.length!==(o.segments||[]).length)errors.push('线段端点不存在');for(const n of ns)if(![...n.position,n.time,n.dwell||0,n.radius??.5].every(Number.isFinite)||n.time<0||(n.dwell||0)<0||(n.radius??.5)<0)errors.push('控制点数值无效');for(let i=0;i<ss.length;i++){const s=ss[i];if(s.endTime-s.startTime<=EPS)errors.push('线段时长必须大于零');if(distance(s.a.position,s.b.position)<=EPS)errors.push('线段长度必须大于零');if(i&&s.startTime<ss[i-1].endTime-EPS)errors.push('线段时间重叠');if(full&&i&&s.start!==ss[i-1].end)errors.push('路径不连续：请修复连接或单独预演线段');}return [...new Set(errors)];}
+export function pathErrors(o,full=false){const errors=[],ns=o.nodes||[],ss=edges(o);if(new Set(ns.map(n=>n.id)).size!==ns.length)errors.push('控制点标识重复');if(new Set((o.segments||[]).map(s=>s.id)).size!==(o.segments||[]).length)errors.push('线段标识重复');if(ss.length!==(o.segments||[]).length)errors.push('线段端点不存在');for(const n of ns)if(![...n.position,n.time,n.dwell||0,n.radius??.5].every(Number.isFinite)||n.time<0||(n.dwell||0)<0||(n.radius??.5)<0)errors.push('控制点数值无效');for(let i=0;i<ss.length;i++){const s=ss[i];if(s.endTime-s.startTime<=EPS)errors.push('线段时长必须大于零');if(distance(s.a.position,s.b.position)<=EPS)errors.push('线段长度必须大于零');if(i&&s.startTime<ss[i-1].endTime-EPS)errors.push('线段时间重叠');if(full&&i&&!s.cutStart&&s.start!==ss[i-1].end)errors.push('路径不连续：请修复连接或单独预演线段');}return [...new Set(errors)];}
 export class SegmentMotion{
  constructor(o){this.object=o;this.segments=edges(o);this.arcs=[];const corners=new Map();if(o.smooth)for(let i=1;i<this.segments.length;i++){const prev=this.segments[i-1],s=this.segments[i],n=s.a;if(prev.end!==s.start||n.exact||n.dwell)continue;const a=prev.a.position,b=n.position,c=s.b.position,u=unit(sub(a,b)),v=unit(sub(c,b)),r=Math.min(n.radius??.5,distance(a,b)*.49,distance(b,c)*.49);if(r>EPS&&Math.abs(dot(u,v))<.99999)corners.set(n.id,[add(b,mul(u,r)),b,add(b,mul(v,r))]);}
-  for(const s of this.segments){const points=[];if(corners.has(s.start))for(let j=0;j<=64;j++)points.push(bez(...corners.get(s.start),.5+j/128));else points.push(s.a.position);if(corners.has(s.end))for(let j=0;j<=64;j++)points.push(bez(...corners.get(s.end),j/128));else points.push(s.b.position);this.arcs.push(new Arc(points));}
+  for(const s of this.segments){
+   if(s.cutShape){
+    this.arcs.push(new Arc(s.cutShape.map(([f,...offset])=>add(add(mul(s.a.position,1-f),mul(s.b.position,f)),offset))));
+    continue;
+   }
+   const points=[];if(corners.has(s.start))for(let j=0;j<=64;j++)points.push(bez(...corners.get(s.start),.5+j/128));else points.push(s.a.position);if(corners.has(s.end))for(let j=0;j<=64;j++)points.push(bez(...corners.get(s.end),j/128));else points.push(s.b.position);this.arcs.push(new Arc(points));}
  }
- at(t,only=null){let last=null;for(let i=0;i<this.segments.length;i++){const s=this.segments[i],arc=this.arcs[i];if(only&&s.id!==only)continue;if(t<s.startTime&&last)return last;const f=ease((t-s.startTime)/Math.max(EPS,s.endTime-s.startTime),s.b.easing);const p=arc.at(f)[0],tangent=unit(sub(arc.at(Math.min(1,f+.001))[0],arc.at(Math.max(0,f-.001))[0]));last=[p,tangent];if(t<s.endTime)return last;}return last||[this.object.nodes[0]?.position||this.object.position,[0,0,0]];}
+ at(t,only=null){let last=null;for(let i=0;i<this.segments.length;i++){const s=this.segments[i],arc=this.arcs[i];if(only&&s.id!==only)continue;if(t<s.startTime&&last)return last;const f=edgeProgress(s,t);const p=arc.at(f)[0],tangent=unit(sub(arc.at(Math.min(1,f+.001))[0],arc.at(Math.max(0,f-.001))[0]));last=[p,tangent];if(t<s.endTime)return last;}return last||[this.object.nodes[0]?.position||this.object.position,[0,0,0]];}
+}
+function edgeProgress(s,t){
+ const [a,b]=s.easeRange||[0,1],dt=Math.max(0,Math.min(1,(t-s.startTime)/(s.endTime-s.startTime)));
+ const first=ease(a,s.b.easing),last=ease(b,s.b.easing);
+ return last>first?(ease(a+(b-a)*dt,s.b.easing)-first)/(last-first):dt;
+}
+// Store the retained polyline relative to its editable endpoints.
+function cutShape(arc,lo,hi,a,b){
+ const points=[arc.at(lo)[0]];
+ for(let i=1;i<arc.points.length-1;i++){
+  const f=arc.lengths[i]/arc.total;
+  if(f>lo&&f<hi)points.push(arc.points[i]);
+ }
+ points.push(arc.at(hi)[0]);
+ const sliced=new Arc(points);
+ return points.map((p,i)=>{
+  const f=sliced.total?sliced.lengths[i]/sliced.total:i/(points.length-1);
+  return [f,...sub(p,add(mul(a,1-f),mul(b,f)))];
+ });
+}
+export function deletePathRange(project,o,sid,start,end){
+ const u=pathUnit(o,sid);
+ if(o.locked||!u?.members||project.objects.some(c=>c.shots?.[u.id]))throw Error('请选择可编辑的未设镜头路径');
+ if(!(start>=u.startTime-EPS&&end<=u.endTime+EPS&&end>start))throw Error('视频片段边界无效');
+ const original=new SegmentMotion(o),members=new Set(u.members),next=[],added=[],oldNodes=new Set(),remaining=[];
+ const cuts=(u.clipCuts||[]).map(t=>t+u.startTime);
+ function boundary(s,t,arc){
+  if(t===s.startTime)return s.a;
+  if(t===s.endTime)return s.b;
+  const node={id:uid(),position:arc.at(edgeProgress(s,t))[0],time:t,dwell:0,radius:0,exact:true,easing:s.b.easing};
+  added.push(node);return node;
+ }
+ for(const [i,s] of original.segments.entries()){
+  const raw=o.segments.find(x=>x.id===s.id),arc=original.arcs[i];
+  if(!members.has(s.id)){
+   if(s.startTime>=end&&original.segments[i-1]?.endTime>end-EPS&&members.has(original.segments[i-1].id)&&original.segments[i-1].startTime<end)raw.cutStart=true;
+   if(o.smooth&&!raw.cutShape&&(members.has(original.segments[i-1]?.id)||members.has(original.segments[i+1]?.id)))
+    raw.cutShape=cutShape(arc,0,1,s.a.position,s.b.position);
+   next.push(raw);continue;
+  }
+  oldNodes.add(s.start);oldNodes.add(s.end);
+  for(const [lo,hi] of [[s.startTime,Math.min(start,s.endTime)],[Math.max(end,s.startTime),s.endTime]]){
+   if(hi-lo<=EPS)continue;
+   const a=boundary(s,lo,arc),b=boundary(s,hi,arc);
+   const part={...raw,id:lo>s.startTime&&start>s.startTime?uid():s.id,start:a.id,end:b.id,startTime:lo,endTime:hi};
+   delete part.clipCuts;
+   if(Math.abs(lo-end)<=EPS)part.cutStart=true;
+   if(lo!==s.startTime||hi!==s.endTime){
+    const span=s.endTime-s.startTime,[from,to]=s.easeRange||[0,1];
+    part.easeRange=[lo,hi].map(t=>from+(to-from)*(t-s.startTime)/span);
+    if(part.motion)part.motionOffset=(s.motionOffset||0)+lo-s.startTime;
+   }
+   if(o.smooth||s.cutShape)part.cutShape=cutShape(arc,edgeProgress(s,lo),edgeProgress(s,hi),a.position,b.position);
+   next.push(part);remaining.push(part);
+  }
+ }
+ for(const side of [remaining.filter(s=>s.endTime<=start+EPS),remaining.filter(s=>s.startTime>=end-EPS)]){
+  if(!side.length)continue;
+  for(const s of side){if(side.length>1)s.group=side[0].id;else delete s.group;}
+  side[0].clipCuts=cuts.filter(t=>t>side[0].startTime+EPS&&t<side.at(-1).endTime-EPS).map(t=>t-side[0].startTime);
+ }
+ const used=new Set(next.flatMap(s=>[s.start,s.end]));
+ o.nodes=[...o.nodes.filter(n=>!oldNodes.has(n.id)||used.has(n.id)||n.dwell>0),...added].sort((a,b)=>a.time-b.time);
+ o.segments=next;o.timing='TIME';syncSegments(o);
 }
 export function retime(o){syncSegments(o);if(o.timing!=='SPEED'||!o.segments?.length)return;const motion=new SegmentMotion(o),ss=motion.segments;for(let i=0;i<ss.length;i++){const s=ss[i];s.b.time=s.a.time+(s.a.dwell||0)+motion.arcs[i].total/Math.max(.001,o.speed||1);}syncSegments(o);}
 export function appendPoint(o,position){if(!o.nodes.length)o.nodes.push({id:uid(),position:[...o.position],time:0,dwell:0,radius:.5,easing:'LINEAR'});const prev=o.nodes.at(-1);if(distance(prev.position,position)<EPS)throw Error('新控制点不能与末点重合');const n={id:uid(),position:[...position],time:prev.time+(prev.dwell||0)+distance(prev.position,position)/(o.speed||1),dwell:0,radius:.5,easing:'LINEAR'};o.nodes.push(n);o.segments.push({id:uid(),start:prev.id,end:n.id});syncSegments(o);retime(o);return n;}
-export function splitSegment(project,o,sid){const s=edges(o).find(s=>s.id===sid);if(!s)throw Error('请选择有效线段');const n={id:uid(),position:mul(add(s.a.position,s.b.position),.5),time:(s.startTime+s.endTime)/2,dwell:0,radius:s.b.radius??.5,exact:false,easing:s.b.easing||'LINEAR'};o.nodes.splice(o.nodes.indexOf(s.b),0,n);const first={id:uid(),start:s.start,end:n.id,...(s.motion?{motion:structuredClone(s.motion)}:{})},second={id:uid(),start:n.id,end:s.end,...(s.motion?{motion:structuredClone(s.motion)}:{})};o.segments.splice(o.segments.findIndex(x=>x.id===sid),1,first,second);for(const c of project.objects){if(c.shots?.[sid]){c.shots[first.id]=structuredClone(c.shots[sid]);c.shots[second.id]=structuredClone(c.shots[sid]);delete c.shots[sid];}}syncSegments(o);retime(o);for(const c of project.objects){const cfg=c.shots?.[second.id];if(cfg&&!cfg.inherit){try{const ss=edges(o),ev=new Evaluator(project),end=ev.shot(c,o,ss.findIndex(s=>s.id===first.id),ss.find(s=>s.id===first.id).endTime);cfg.start=captureStart(end);}catch{ /* Preserve conflicting inputs for explicit user correction. */ }}}return first.id;}
+export function splitSegment(project,o,sid){const s=edges(o).find(s=>s.id===sid);if(!s)throw Error('请选择有效线段');const n={id:uid(),position:mul(add(s.a.position,s.b.position),.5),time:(s.startTime+s.endTime)/2,dwell:0,radius:s.b.radius??.5,exact:false,easing:s.b.easing||'LINEAR'};o.nodes.splice(o.nodes.indexOf(s.b),0,n);const first={id:s.group?s.id:uid(),...(s.group?{group:s.group,clipCuts:s.clipCuts}:{}),start:s.start,end:n.id,...(s.motion?{motion:structuredClone(s.motion)}:{})},second={id:uid(),...(s.group?{group:s.group}:{}),start:n.id,end:s.end,...(s.motion?{motion:structuredClone(s.motion)}:{})};o.segments.splice(o.segments.findIndex(x=>x.id===sid),1,first,second);for(const c of project.objects){if(!s.group&&c.shots?.[sid]){c.shots[first.id]=structuredClone(c.shots[sid]);c.shots[second.id]=structuredClone(c.shots[sid]);delete c.shots[sid];}}syncSegments(o);retime(o);for(const c of project.objects){const cfg=c.shots?.[second.id];if(cfg&&!cfg.inherit){try{const ss=edges(o),ev=new Evaluator(project),end=ev.shot(c,o,ss.findIndex(s=>s.id===first.id),ss.find(s=>s.id===first.id).endTime);cfg.start=captureStart(end);}catch{ /* Preserve conflicting inputs for explicit user correction. */ }}}return first.id;}
 function removeSegments(project,o,ids,points=[]){
  const removed=new Set(ids),affected=new Set(points);
  for(const s of o.segments)if(removed.has(s.id)){affected.add(s.start);affected.add(s.end);}
@@ -49,6 +118,7 @@ export class Evaluator{
   const s=unitOverride||edges(owner)[index],cfg=c.shots?.[s.id];if(!cfg)return this.base(c,t);
   const target=this.objects.get(cfg.focusTarget);if(!target&&cfg.mode!=='FREE')throw Error('镜头焦点对象不存在');
   const inherited=cfg.controlVersion!==3&&cfg.inherit&&index>0,start=inherited?this.previous(c,owner,index):cfg.start;
+  const localStart=s.startTime;
   const duration=s.endTime-s.startTime,dt=Math.max(0,Math.min(t-s.startTime,duration)),progress=dt/duration;
   const f0=cfg.mode==='FREE'?cfg.focusWorld:this.focus(target,cfg.focusLocal,s.startTime),focus=cfg.mode==='FREE'?f0:this.focus(target,cfg.focusLocal,s.startTime+dt),free=cfg.orientation==='FREE';
   let position,up=[0,0,1];
@@ -81,7 +151,7 @@ export class Evaluator{
    position=add(add(start.position,sub(focus,f0)),mul(velocity,dt));
   }
   const delta=cfg.rotationDelta||[0,0,0],roll=inherited?(start.roll||0):(cfg.roll??start.roll??0);
-  if(cfg.mode==='FREE'&&cfg.freeMotion?.segments?.length){const path=new SegmentMotion(cfg.freeMotion);position=add(position,sub(path.at(s.startTime+dt)[0],path.at(s.startTime)[0]));}
+  if(cfg.mode==='FREE'&&cfg.freeMotion?.segments?.length){const path=new SegmentMotion(cfg.freeMotion);position=add(position,sub(path.at(localStart+dt)[0],path.at(localStart)[0]));}
   const state={position,focus,up,lens:cfg.lensEnd!==undefined?cfg.lens+(cfg.lensEnd-cfg.lens)*progress:(cfg.lens??start.lens??c.lens),roll:roll+delta[2]*progress};
   if(free){
    const initial=inherited?cameraQuaternion(start):(start.quaternion||cameraQuaternion({position:start.position,focus:f0,up,roll}));
@@ -90,7 +160,7 @@ export class Evaluator{
     .multiply(new THREE.Quaternion(...initial)).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0),delta[1]*progress))
     .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),delta[2]*progress)).normalize().toArray();
   }else if(distance(position,focus)<POSITION_EPS){state.cameraRotation=[...(start.quaternion||qrot(c.rotation).toArray())];state.warning='摄影机与焦点重合，暂时保留起始朝向；可继续移动机位';}
-  if(cfg.mode==='FREE'&&cfg.freeMotion){const m=cfg.freeMotion;state.lens=keyValue(m.lenses||[],s.startTime+dt,state.lens);if(m.angles?.length){const [a,b,f]=keyInterval(m.angles,s.startTime+dt);state.cameraRotation=qrot(a.rotation).slerp(qrot(b.rotation),f).toArray();}}
+  if(cfg.mode==='FREE'&&cfg.freeMotion){const m=cfg.freeMotion;state.lens=keyValue(m.lenses||[],localStart+dt,state.lens);if(m.angles?.length){const [a,b,f]=keyInterval(m.angles,localStart+dt);state.cameraRotation=qrot(a.rotation).slerp(qrot(b.rotation),f).toArray();}}
   if(cfg.mode==='FREE'&&cfg.aimMotion?.segments?.length){
    state.focus=new SegmentMotion(cfg.aimMotion).at(dt)[0];
    state.aimPath=true;
@@ -132,12 +202,71 @@ export function captureStart(state){return {position:[...state.position],quatern
 export function cameraQuaternion(state){if(state.cameraRotation)return state.cameraRotation;if(!state.focus)return state.quaternion;if(distance(state.position,state.focus)<POSITION_EPS)return state.quaternion||[0,0,0,1];const z=unit(sub(state.position,state.focus));let x=unit(cross(state.up||[0,0,1],z));if(length(x)<EPS)x=unit(cross([0,1,0],z));const y=cross(z,x),m=new THREE.Matrix4().makeBasis(new THREE.Vector3(...x),new THREE.Vector3(...y),new THREE.Vector3(...z));return new THREE.Quaternion().setFromRotationMatrix(m).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),state.roll||0)).toArray();}
 
 // Scene time units do not alter the path graph. Dwell units are derived, never stored as edges.
-export function units(o){return [...edges(o),...(o.nodes||[]).filter(n=>n.dwell>0).map(n=>({id:n.id,kind:'DWELL',a:n,b:n,startTime:n.time,endTime:n.time+n.dwell}))].sort((a,b)=>a.startTime-b.startTime);}
+function movementUnits(o){
+ const result=[];
+ for(const edge of edges(o)){
+  const prev=result.at(-1);
+  if(edge.group&&edge.group===prev?.group&&prev.end===edge.start&&!edge.a.dwell){
+   prev.end=edge.end;prev.b=edge.b;prev.endTime=edge.endTime;prev.members.push(edge.id);
+  }else result.push({...edge,members:[edge.id]});
+ }
+ return result;
+}
+export function pathUnit(o,id){
+ return units(o).find(u=>u.id===id||u.members?.includes(id));
+}
+export function mergePaths(project,o,first,second){
+ if(!['ACTOR','PROP'].includes(o.role)||o.locked)throw Error('请选择可编辑的人物或物品路径');
+ const pair=[pathUnit(o,first),pathUnit(o,second)].sort((a,b)=>a?.startTime-b?.startTime);
+ const [a,b]=pair;
+ if(!a?.members||!b?.members||a.id===b.id||a.end!==b.start||Math.abs(a.endTime-b.startTime)>EPS)throw Error('请选择同一对象首尾相接的两段运动路径');
+ const members=new Set([...a.members,...b.members]);
+ const segments=o.segments.filter(s=>members.has(s.id));
+ if(segments.some(s=>s.motion||project.objects.some(c=>c.shots?.[s.id])))throw Error('已设置镜头或绑定动作的路径不能合并');
+ const cuts=[...(a.clipCuts||[]),...(b.clipCuts||[]).map(t=>t+b.startTime-a.startTime)];
+ for(const s of segments){s.group=a.id;delete s.clipCuts;}
+ if(cuts.length)segments.find(s=>s.id===a.id).clipCuts=cuts;
+ return a.id;
+}
+export function units(o){return [...movementUnits(o),...(o.nodes||[]).filter(n=>n.dwell>0).map(n=>({id:n.id,kind:'DWELL',a:n,b:n,startTime:n.time,endTime:n.time+n.dwell}))].sort((a,b)=>a.startTime-b.startTime);}
+export function videoTrackOrder(c,p){
+ const shots=Object.values(c?.shots||{});
+ const owners=new Set(shots.map(cfg=>cfg.owner));
+ for(const o of p?.objects||[])if(['ACTOR','PROP'].includes(o.role)&&o.segments?.length)owners.add(o.id);
+ const order=[];
+ for(const id of c?.videoTracks||[])if(owners.delete(id))order.push(id);
+ return [...order,...owners];
+}
 export function shotEntries(p,cameraId=p.activeCamera){const result=[];for(const c of p.objects.filter(c=>c.id===cameraId))for(const [sid,cfg]of Object.entries(c.shots||{})){const owner=p.objects.find(o=>o.id===cfg.owner),unit=owner&&units(owner).find(u=>u.id===sid);if(unit)result.push({c,cfg,owner,unit});}return result.sort((a,b)=>a.unit.startTime-b.unit.startTime||a.unit.id.localeCompare(b.unit.id));}
-export function shotAt(p,c,t,only=null){const entries=shotEntries(p,c.id);if(only)return entries.find(e=>e.unit.id===only)||null;return entries.find(e=>t>=e.unit.startTime&&t<e.unit.endTime)||(entries.at(-1)?.unit.endTime===t?entries.at(-1):null);}
+export function videoEntries(p,cameraId=p.activeCamera){
+ const c=p.objects.find(o=>o.id===cameraId);
+ if(!c)return [];
+ const entries=shotEntries(p,cameraId);
+ for(const owner of p.objects){
+  if(!['ACTOR','PROP'].includes(owner.role))continue;
+  for(const unit of movementUnits(owner))if(!c.shots?.[unit.id])entries.push({c,owner,unit,cfg:null});
+ }
+ return entries;
+}
+export function shotAt(p,c,t,only=null){
+ const entries=videoEntries(p,c.id);
+ if(only)return entries.find(e=>e.unit.id===only)||null;
+ let candidates=entries.filter(e=>e.unit.startTime<=t&&t<e.unit.endTime);
+ if(!candidates.length&&entries.every(e=>e.unit.endTime<=t))candidates=entries.filter(e=>e.unit.endTime===t);
+ if(candidates.length<2)return candidates[0]||null;
+ const order=videoTrackOrder(c,p);
+ return candidates.reduce((top,e)=>order.indexOf(e.owner.id)<order.indexOf(top.owner.id)?e:top);
+}
 export function currentShot(p){const entries=shotEntries(p);return entries.find(e=>e.unit.id===p.editShotId)||entries[0]||null;}
 export function setDwell(o,n,value){if(!Number.isFinite(value)||value<0)throw Error('停留时间必须大于等于零');const delta=value-(n.dwell||0),index=o.nodes.indexOf(n);n.dwell=value;for(const next of o.nodes.slice(index+1))next.time+=delta;syncSegments(o);retime(o);}
-export function setUnitDuration(o,sid,value){if(!Number.isFinite(value)||value<=0)throw Error('运动时长必须大于零');const s=edges(o).find(s=>s.id===sid);if(!s)throw Error('线段不存在');o.timing='TIME';const delta=value-(s.endTime-s.startTime);for(const n of o.nodes.slice(o.nodes.indexOf(s.b)))n.time+=delta;syncSegments(o);}
+export function setUnitDuration(o,sid,value){if(!Number.isFinite(value)||value<=0)throw Error('运动时长必须大于零');const s=pathUnit(o,sid);if(!s?.members)throw Error('线段不存在');
+ const duration=s.endTime-s.startTime,delta=value-duration;
+ o.timing='TIME';
+ for(const n of o.nodes){
+  if(n.time>=s.endTime)n.time+=delta;
+  else if(n.time>s.startTime)n.time=s.startTime+(n.time-s.startTime)*value/duration;
+ }
+ syncSegments(o);}
 export function configureShot(p,c,o,sid,mode,inherit=false){
  const unit=units(o).find(s=>s.id===sid);if(!unit)throw Error('请选择线段或正数停留点');
  if(!['FREE','TRACK'].includes(mode))throw Error('请选择拍摄模式');
@@ -152,13 +281,15 @@ export function configureShot(p,c,o,sid,mode,inherit=false){
   cfg.aimMotion.position=add(cfg.aimMotion.position,offset);
   for(const n of cfg.aimMotion.nodes)n.position=add(n.position,offset);
  }
- // Across modes preserve the actual sight point in the new target's local coordinates.
- if(mode==='TRACK'&&inherit){const pose=ev.pose(tracking,unit.startTime),q=new THREE.Quaternion(...pose.quaternion).invert();cfg.focusLocal=rotate(sub(cfg.focusWorld,pose.position),q).map((v,i)=>v/tracking.scale[i]);}
  cfg.freeMotion??={id:c.id,position:[...cfg.start.position],rotation:[0,0,0],scale:[1,1,1],nodes:[],segments:[],angles:[],lenses:[],smooth:false,timing:'TIME'};
- syncOrbit(p,cfg,unit.startTime);
- if(c.shots?.[sid]?.clipCuts)cfg.clipCuts=[...c.shots[sid].clipCuts];
+ const cuts=c.shots?.[sid]?.clipCuts||unit.clipCuts;
+ if(cuts)cfg.clipCuts=[...cuts];
  else delete cfg.clipCuts;
  c.shots??={};c.shots[sid]=cfg;p.editShotId=sid;p.shotFramework=2;
+ const sceneStart=unit.startTime;
+ // Across modes preserve the actual sight point in the new target's local coordinates.
+ if(mode==='TRACK'&&inherit){const pose=ev.pose(tracking,sceneStart),q=new THREE.Quaternion(...pose.quaternion).invert();cfg.focusLocal=rotate(sub(cfg.focusWorld,pose.position),q).map((v,i)=>v/tracking.scale[i]);}
+ syncOrbit(p,cfg,sceneStart);
  return cfg;
 }
 export function pruneCurrentShot(p){if(p.shotFramework!==2)return;for(const c of p.objects)for(const [sid,cfg]of Object.entries(c.shots||{})){const owner=p.objects.find(o=>o.id===cfg.owner);if(!owner||!units(owner).some(u=>u.id===sid))delete c.shots[sid];}}

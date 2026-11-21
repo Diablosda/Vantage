@@ -30,7 +30,7 @@ from backend.portable import create_bundle, read_bundle, MAX_ARCHIVE
 ROOT=Path(__file__).resolve().parent
 WEB=ROOT/'web';DATA=data_root();PROJECTS=DATA/'Projects';RUNTIME=cache_root()/'Jobs'
 BLENDER=blender_path()
-TOKEN=secrets.token_urlsafe(32);JOBS={};GATE=threading.Semaphore(1);APP_VERSION='2.1.4'
+TOKEN=secrets.token_urlsafe(32);JOBS={};GATE=threading.Semaphore(1);APP_VERSION='2.1.5'
 MAX_BODY=128*1024**2
 
 # Capture one frontend release per running process, so updating files cannot mix
@@ -97,7 +97,7 @@ def run_job(job,payload,source=None):
                 if payload['mode']=='clip':
                     job['_clipCache']=tempfile.TemporaryDirectory(prefix='clip-',dir=RUNTIME)
                     payload['frameFolder']=job['_clipCache'].name
-                    job.update(message='正在准备视频条场景',frames=len(payload['times']))
+                    job.update(message='正在准备轨道片段场景',frames=len(payload['times']))
                 payload['dataRoot']=str(DATA)
                 task=work/'task.json';task.write_text(json.dumps(payload,ensure_ascii=False),encoding='utf-8')
                 flags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0
@@ -291,10 +291,10 @@ class Handler(BaseHTTPRequestHandler):
             cache=job.get('_clipCache')
             index=int(clip[2])
             if not cache or job.get('state')!='done' or index>=job['frames']:
-                self.json({'error':'视频条缓存已过期，请重新渲染'},404);return
+                self.json({'error':'轨道片段缓存已过期，请重新渲染'},404);return
             job['_clipAccess']=time.monotonic()
             try:frame=(Path(cache.name)/f'{index:06d}.png').read_bytes()
-            except FileNotFoundError:self.json({'error':'视频条已释放'},404);return
+            except FileNotFoundError:self.json({'error':'轨道片段已释放'},404);return
             self.headers_out(200,'image/png',len(frame));self.wfile.write(frame);return
         if path.startswith('/api/rendered-frame/'):
             job=JOBS.get(path.rsplit('/',1)[-1],{})
@@ -480,7 +480,7 @@ class Handler(BaseHTTPRequestHandler):
                         times=clip_times(data['project'],data['owner'],data['segment'],data['firstFrame'])
                     else:times=export_times(data['project'],data.get('scope','all'),data.get('owner'),data.get('segment'))
                     mode='render' if data.get('lighting',False) else 'preview'
-                    ident=submit_video({'mode':mode,'project':data['project'],'outputFile':data.get('outputFile'),'overwrite':data.get('overwrite') is True,'browserSave':data.get('browserSave') is True,'times':times})
+                    ident=submit_video({'mode':mode,'project':data['project'],'outputFile':data.get('outputFile'),'overwrite':data.get('overwrite') is True,'browserSave':data.get('browserSave') is True,'segment':data.get('segment') if data.get('scope') in ('current','clip') else None,'times':times})
                     self.json({'job':ident,'times':times if mode=='preview' else None},202);return
                 self.json({'job':submit({'mode':'render' if url.path.endswith('export') else 'save','project':data['project'],'outputDirectory':data.get('outputDirectory'),'saveTarget':data.get('saveTarget')})},202);return
             if url.path=='/api/validate':self.json({'errors':validate(data['project'],data.get('export',False),asset_root=DATA)});return
